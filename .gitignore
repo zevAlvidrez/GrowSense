@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Arduino build folder
+*.pio/
+build/
+
+# Arduino-specific
+*.elf
+*.bin
+*.hex
+
+# IDEs
+.vscode/
+.idea/
+
+# Node (if you later add a site)
+node_modules/
+
+# secrets
+**/secrets.h
+*.env
