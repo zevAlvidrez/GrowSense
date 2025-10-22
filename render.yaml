@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: growsense
+    env: python
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 'app:create_app()'"
+    healthCheckPath: /health
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      # The following should be set in Render dashboard as secrets:
+      # - FIREBASE_SERVICE_ACCOUNT_JSON (paste entire JSON as single line)
+      # - DEVICE_KEYS_PATH (or keep as ./device_keys.json if you upload the file)
+      # - FIREBASE_STORAGE_BUCKET (optional, for image uploads)
+
