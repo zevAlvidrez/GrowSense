@@ -31,7 +31,7 @@ device_keys.json
 firebase-credentials.json
 
 # Firmware secrets (keep secrets.h.example, ignore actual secrets.h if it has real credentials)
-# firmware/GrowSenseModule/secrets.h
+firmware/GrowSenseModule/secrets.h
 
 # IDE
 .vscode/
