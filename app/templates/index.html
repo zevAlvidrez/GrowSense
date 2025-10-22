@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GrowSense Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <!-- Chart.js for data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header Section -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🌱 GrowSense Dashboard</h1>
+                <p class="subtitle">Monitor your plant sensors in real-time</p>
+            </div>
+        </header>
+
+        <!-- Controls Section -->
+        <section class="controls">
+            <div class="control-group">
+                <label for="device-select">Select Device:</label>
+                <select id="device-select">
+                    <option value="test_device">Test Device</option>
+                    <option value="esp32_device_001">ESP32 Device 001</option>
+                    <!-- Add more devices here -->
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label for="limit-select">Show Last:</label>
+                <select id="limit-select">
+                    <option value="10">10 readings</option>
+                    <option value="50" selected>50 readings</option>
+                    <option value="100">100 readings</option>
+                    <option value="500">500 readings</option>
+                </select>
+            </div>
+
+            <button id="refresh-btn" class="btn-primary">🔄 Refresh Data</button>
+            
+            <div class="auto-refresh">
+                <label>
+                    <input type="checkbox" id="auto-refresh-toggle" checked>
+                    Auto-refresh (30s)
+                </label>
+            </div>
+        </section>
+
+        <!-- Current Readings Section - Shows latest sensor values -->
+        <section class="current-readings">
+            <h2>Latest Readings</h2>
+            <div class="readings-grid">
+                <div class="reading-card">
+                    <div class="reading-icon">🌡️</div>
+                    <div class="reading-content">
+                        <div class="reading-label">Temperature</div>
+                        <div class="reading-value" id="current-temp">--</div>
+                        <div class="reading-unit">°C</div>
+                    </div>
+                </div>
+
+                <div class="reading-card">
+                    <div class="reading-icon">💧</div>
+                    <div class="reading-content">
+                        <div class="reading-label">Humidity</div>
+                        <div class="reading-value" id="current-humidity">--</div>
+                        <div class="reading-unit">%</div>
+                    </div>
+                </div>
+
+                <div class="reading-card">
+                    <div class="reading-icon">☀️</div>
+                    <div class="reading-content">
+                        <div class="reading-label">Light</div>
+                        <div class="reading-value" id="current-light">--</div>
+                        <div class="reading-unit">lux</div>
+                    </div>
+                </div>
+
+                <div class="reading-card">
+                    <div class="reading-icon">🌿</div>
+                    <div class="reading-content">
+                        <div class="reading-label">Soil Moisture</div>
+                        <div class="reading-value" id="current-soil">--</div>
+                        <div class="reading-unit">%</div>
+                    </div>
+                </div>
+            </div>
+            <div class="last-updated" id="last-updated">Last updated: Never</div>
+        </section>
+
+        <!-- Chart Section - Visualize trends over time -->
+        <section class="chart-section">
+            <h2>Sensor Trends</h2>
+            <div class="chart-container">
+                <canvas id="sensor-chart"></canvas>
+            </div>
+        </section>
+
+        <!-- Data Table Section - Detailed readings table -->
+        <section class="data-table-section">
+            <h2>Recent Data</h2>
+            <div class="table-container">
+                <table id="data-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Temperature (°C)</th>
+                            <th>Humidity (%)</th>
+                            <th>Light (lux)</th>
+                            <th>Soil Moisture (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="table-body">
+                        <tr>
+                            <td colspan="5" class="no-data">No data available. Click "Refresh Data" to load.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Status Section -->
+        <footer class="status-bar">
+            <span id="status-message">Ready</span>
+            <span id="data-count">0 readings</span>
+        </footer>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
+

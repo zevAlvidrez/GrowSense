@@ -1,0 +1,6 @@
+{
+  "esp32_device_001": "your-secret-api-key-001",
+  "esp32_device_002": "your-secret-api-key-002",
+  "test_device": "test-key-for-development"
+}
+

@@ -1,22 +1,48 @@
-# macOS
-.DS_Store
-
-# Arduino build folder
-*.pio/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Arduino-specific
-*.elf
-*.bin
-*.hex
+# Environment & Secrets
+.env
+.env.local
+serviceAccountKey.json
+device_keys.json
+firebase-credentials.json
 
-# IDEs
+# Firmware secrets (keep secrets.h.example, ignore actual secrets.h if it has real credentials)
+# firmware/GrowSenseModule/secrets.h
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Node (if you later add a site)
-node_modules/
+# OS
+.DS_Store
+Thumbs.db
 
-# secrets
-**/secrets.h
-*.env
+# Logs
+*.log
