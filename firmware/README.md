@@ -1,20 +1,49 @@
 # Firmware
 
-This folder contains the Arduino sketch for GrowSense.
+This folder contains Arduino sketches for GrowSense ESP32 modules.
 
-## Files
-- `GrowSenseModule/` — main Arduino sketch (`GrowSenseModule.ino`)
-- `libraries/` — optional: copy library versions you want to pin
+## Modules
+
+### GrowSenseModule/ (Production)
+
+**Recommended for new setups** - Production-ready firmware that uploads to GrowSense Flask dashboard.
+
+- ✅ Direct HTTP uploads to https://growsense-wer0.onrender.com
+- ✅ WiFi with auto-reconnect
+- ✅ Secure API key authentication
+- ✅ Modular sensor functions (easy to customize)
+- ✅ Comprehensive debugging
+- ✅ Works with dummy data for testing without sensors
+
+See `GrowSenseModule/README.md` for complete setup instructions.
+
+**Required Libraries:**
+- ArduinoJson (install via Library Manager)
+
+### AdafruitGrowSenseModule/ (Legacy)
+
+Alternative implementation using Adafruit IO for MQTT-based uploads.
+
+**Required Libraries:**
+- Adafruit IO Arduino
+
+---
+
+## Quick Start
+
+For new deployments, use **GrowSenseModule**:
+
+1. Open `GrowSenseModule/GrowSenseModule.ino` in Arduino IDE
+2. Copy `secrets.h.example` to `secrets.h` and configure
+3. Install ArduinoJson library
+4. Upload to ESP32
+5. Monitor serial output (115200 baud)
+
+See module README for detailed instructions.
 
 ## Required Board
-- **Board**: ESP32 Dev Module (choose the matching variant in Arduino IDE)
+- **Board**: ESP32 Dev Module (any variant)
 - Make sure you have the ESP32 board support installed in Arduino IDE
-
-## Required Libraries
-Install via Arduino Library Manager (**Sketch → Include Library → Manage Libraries**):
-- **Adafruit IO Arduino** (this will also install required dependencies like Adafruit MQTT Library)
-
-That's it! The WiFi library is included in the ESP32 core.
 
 ## Setting Up secrets.h
 
