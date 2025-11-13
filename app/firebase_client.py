@@ -349,3 +349,113 @@ def get_device_info(device_id, user_id=None):
     
     return None
 
+
+def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_limit=None):
+    """
+    Get sensor readings from user's devices.
+    
+    Args:
+        user_id: Firebase user ID
+        device_ids: Optional list of specific device IDs to query.
+                   If None, queries all user's devices.
+        limit: Total number of readings to return across all devices (default: 100, max: 1000)
+        per_device_limit: Optional limit per device (useful when user has many devices)
+        
+    Returns:
+        tuple: (readings: list, device_count: int)
+               readings is list of dicts with device_id, device_name, and reading data
+    """
+    db = get_firestore()
+    
+    # Get list of user's devices
+    if device_ids is None:
+        # Get all user's devices
+        user_devices = get_user_devices(user_id)
+        device_ids = [device['device_id'] for device in user_devices]
+        device_names = {device['device_id']: device.get('name', device['device_id']) 
+                       for device in user_devices}
+    else:
+        # Verify ownership of specified devices
+        user_devices = get_user_devices(user_id)
+        user_device_ids = {device['device_id'] for device in user_devices}
+        device_names = {device['device_id']: device.get('name', device['device_id']) 
+                       for device in user_devices}
+        
+        # Filter to only devices that belong to user
+        device_ids = [did for did in device_ids if did in user_device_ids]
+    
+    if not device_ids:
+        return ([], 0)
+    
+    # Set defaults
+    if limit is None:
+        limit = 100
+    limit = min(limit, 1000)  # Cap at 1000
+    
+    # Collect readings from all devices
+    all_readings = []
+    
+    for device_id in device_ids:
+        try:
+            # Query readings for this device
+            readings_ref = db.collection('devices').document(device_id).collection('readings')
+            
+            # Apply per_device_limit if specified
+            query = readings_ref.order_by('server_timestamp', direction='DESCENDING')
+            if per_device_limit:
+                query = query.limit(per_device_limit)
+            else:
+                # If no per_device_limit, get more than we need (we'll limit later)
+                query = query.limit(limit)
+            
+            docs = query.stream()
+            
+            # Add device_id and device_name to each reading
+            device_name = device_names.get(device_id, device_id)
+            for doc in docs:
+                reading = doc.to_dict()
+                reading['id'] = doc.id
+                reading['device_id'] = device_id
+                reading['device_name'] = device_name
+                
+                # Convert server_timestamp to string if present
+                if 'server_timestamp' in reading and reading['server_timestamp']:
+                    if hasattr(reading['server_timestamp'], 'isoformat'):
+                        reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                
+                all_readings.append(reading)
+        except Exception as e:
+            # If a device has no readings or error, continue with other devices
+            print(f"Warning: Error querying device {device_id}: {str(e)}")
+            continue
+    
+    # Sort all readings by server_timestamp (newest first)
+    # Handle cases where server_timestamp might be missing
+    def get_timestamp(reading):
+        if 'server_timestamp' in reading and reading['server_timestamp']:
+            try:
+                from datetime import datetime
+                if isinstance(reading['server_timestamp'], str):
+                    return datetime.fromisoformat(reading['server_timestamp'].replace('Z', '+00:00'))
+                return reading['server_timestamp']
+            except:
+                pass
+        # Fallback to timestamp field
+        if 'timestamp' in reading and reading['timestamp']:
+            try:
+                from datetime import datetime
+                if isinstance(reading['timestamp'], str):
+                    return datetime.fromisoformat(reading['timestamp'].replace('Z', '+00:00'))
+            except:
+                pass
+        # Last resort: use current time (will sort to end)
+        from datetime import datetime
+        return datetime.min
+    
+    all_readings.sort(key=get_timestamp, reverse=True)
+    
+    # Apply total limit
+    all_readings = all_readings[:limit]
+    
+    return (all_readings, len(device_ids))
+

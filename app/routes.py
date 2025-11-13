@@ -14,7 +14,8 @@ from app.firebase_client import (
     register_device_to_user,
     get_user_devices,
     remove_device_from_user,
-    get_device_info
+    get_device_info,
+    get_user_device_readings
 )
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
@@ -517,5 +518,124 @@ def delete_device(device_id):
         
     except Exception as e:
         print(f"Error in delete_device: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+# ========================================
+# User Data Endpoints
+# ========================================
+
+@bp.route('/user_data', methods=['GET'])
+@require_auth
+def get_user_data():
+    """
+    Get sensor readings from all devices belonging to the authenticated user.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Query parameters:
+        limit: Total number of readings to return (default: 100, max: 1000)
+        device_id: Optional filter to get data from specific device (must belong to user)
+        per_device_limit: Optional limit per device (useful when user has many devices)
+    
+    Returns:
+        JSON with readings from all user's devices, sorted by timestamp (newest first)
+    """
+    try:
+        user_id = g.user['uid']
+        
+        # Parse query parameters
+        try:
+            limit = int(request.args.get('limit', 100))
+            limit = min(limit, 1000)  # Cap at 1000
+        except ValueError:
+            limit = 100
+        
+        per_device_limit = request.args.get('per_device_limit')
+        if per_device_limit:
+            try:
+                per_device_limit = int(per_device_limit)
+            except ValueError:
+                per_device_limit = None
+        
+        # Optional device filter
+        device_id_filter = request.args.get('device_id')
+        device_ids = [device_id_filter] if device_id_filter else None
+        
+        # Get readings
+        readings, device_count = get_user_device_readings(
+            user_id, 
+            device_ids=device_ids,
+            limit=limit,
+            per_device_limit=per_device_limit
+        )
+        
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "device_count": device_count,
+            "total_readings": len(readings),
+            "readings": readings
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in get_user_data: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@bp.route('/user_data/<device_id>', methods=['GET'])
+@require_auth
+def get_user_device_data(device_id):
+    """
+    Get sensor readings from a specific device belonging to the authenticated user.
+    Verifies ownership before returning data.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Query parameters:
+        limit: Number of readings to return (default: 100, max: 1000)
+    
+    Args:
+        device_id: Device identifier (from URL path)
+    
+    Returns:
+        JSON with readings from the specified device
+    """
+    try:
+        user_id = g.user['uid']
+        
+        # Verify device belongs to user
+        device_info = get_device_info(device_id, user_id)
+        if not device_info:
+            return jsonify({
+                "error": "Device not found or does not belong to user",
+                "device_id": device_id
+            }), 404
+        
+        # Parse query parameters
+        try:
+            limit = int(request.args.get('limit', 100))
+            limit = min(limit, 1000)  # Cap at 1000
+        except ValueError:
+            limit = 100
+        
+        # Get readings for this specific device
+        readings, device_count = get_user_device_readings(
+            user_id,
+            device_ids=[device_id],
+            limit=limit
+        )
+        
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "device_id": device_id,
+            "device_name": device_info.get('name', device_id),
+            "total_readings": len(readings),
+            "readings": readings
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in get_user_device_data: {str(e)}")
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
