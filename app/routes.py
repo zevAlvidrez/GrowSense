@@ -15,7 +15,8 @@ from app.firebase_client import (
     get_user_devices,
     remove_device_from_user,
     get_device_info,
-    get_user_device_readings
+    get_user_device_readings,
+    write_reading_dual
 )
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
@@ -184,17 +185,28 @@ def upload_data():
         # Remove None values
         reading_doc = {k: v for k, v in reading_doc.items() if v is not None}
         
-        # Write to Firestore: /devices/{device_id}/readings/{auto-id}
-        db = get_firestore()
-        doc_ref = db.collection('devices').document(device_id).collection('readings').document()
-        doc_ref.set(reading_doc)
+        # Dual-write: Write to both old and new locations
+        # Old location: /devices/{device_id}/readings/{auto-id} (always)
+        # New location: /users/{user_id}/devices/{device_id}/readings/{auto-id} (if user_id available)
+        old_ref, new_ref = write_reading_dual(reading_doc, device_id, user_id)
+        
+        # Update device's last_seen timestamp if device is registered to a user
+        if user_id and new_ref:
+            try:
+                db = get_firestore()
+                user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
+                user_device_ref.update({'last_seen': SERVER_TIMESTAMP})
+            except Exception as e:
+                # Non-critical: last_seen update failure shouldn't fail the upload
+                print(f"Warning: Failed to update last_seen for device {device_id}: {str(e)}")
         
         return jsonify({
             "success": True,
             "message": "Data uploaded successfully",
             "device_id": device_id,
-            "reading_id": doc_ref.id,
-            "timestamp": timestamp
+            "reading_id": old_ref.id,
+            "timestamp": timestamp,
+            "dual_write": new_ref is not None  # Indicate if dual-write occurred
         }), 201
         
     except Exception as e:

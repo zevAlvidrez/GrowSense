@@ -394,36 +394,75 @@ def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_li
     
     # Collect readings from all devices
     all_readings = []
+    seen_reading_ids = set()  # For deduplication across old and new locations
     
     for device_id in device_ids:
         try:
-            # Query readings for this device
-            readings_ref = db.collection('devices').document(device_id).collection('readings')
-            
-            # Apply per_device_limit if specified
-            query = readings_ref.order_by('server_timestamp', direction='DESCENDING')
-            if per_device_limit:
-                query = query.limit(per_device_limit)
-            else:
-                # If no per_device_limit, get more than we need (we'll limit later)
-                query = query.limit(limit)
-            
-            docs = query.stream()
-            
-            # Add device_id and device_name to each reading
             device_name = device_names.get(device_id, device_id)
-            for doc in docs:
-                reading = doc.to_dict()
-                reading['id'] = doc.id
-                reading['device_id'] = device_id
-                reading['device_name'] = device_name
+            device_readings = []
+            
+            # First, try new location: /users/{userId}/devices/{deviceId}/readings/
+            try:
+                new_readings_ref = db.collection('users').document(user_id).collection('devices').document(device_id).collection('readings')
+                new_query = new_readings_ref.order_by('server_timestamp', direction='DESCENDING')
+                if per_device_limit:
+                    new_query = new_query.limit(per_device_limit)
+                else:
+                    new_query = new_query.limit(limit)
                 
-                # Convert server_timestamp to string if present
-                if 'server_timestamp' in reading and reading['server_timestamp']:
-                    if hasattr(reading['server_timestamp'], 'isoformat'):
-                        reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                new_docs = new_query.stream()
+                for doc in new_docs:
+                    reading = doc.to_dict()
+                    reading['id'] = doc.id
+                    reading['device_id'] = device_id
+                    reading['device_name'] = device_name
+                    reading['_source'] = 'new'  # Track source for debugging
+                    
+                    # Convert server_timestamp to string if present
+                    if 'server_timestamp' in reading and reading['server_timestamp']:
+                        if hasattr(reading['server_timestamp'], 'isoformat'):
+                            reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                    
+                    # Use reading ID + device_id as unique key for deduplication
+                    reading_key = f"{device_id}:{doc.id}"
+                    if reading_key not in seen_reading_ids:
+                        seen_reading_ids.add(reading_key)
+                        device_readings.append(reading)
+            except Exception as e:
+                # New location might not exist yet, that's okay
+                print(f"Info: New location not available for device {device_id}: {str(e)}")
+            
+            # Fallback/Supplement: Query old location: /devices/{deviceId}/readings/
+            # Only get readings we haven't seen from new location
+            try:
+                old_readings_ref = db.collection('devices').document(device_id).collection('readings')
+                old_query = old_readings_ref.order_by('server_timestamp', direction='DESCENDING')
+                if per_device_limit:
+                    old_query = old_query.limit(per_device_limit * 2)  # Get more to account for deduplication
+                else:
+                    old_query = old_query.limit(limit * 2)
                 
-                all_readings.append(reading)
+                old_docs = old_query.stream()
+                for doc in old_docs:
+                    reading_key = f"{device_id}:{doc.id}"
+                    if reading_key not in seen_reading_ids:
+                        reading = doc.to_dict()
+                        reading['id'] = doc.id
+                        reading['device_id'] = device_id
+                        reading['device_name'] = device_name
+                        reading['_source'] = 'old'  # Track source for debugging
+                        
+                        # Convert server_timestamp to string if present
+                        if 'server_timestamp' in reading and reading['server_timestamp']:
+                            if hasattr(reading['server_timestamp'], 'isoformat'):
+                                reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                        
+                        seen_reading_ids.add(reading_key)
+                        device_readings.append(reading)
+            except Exception as e:
+                print(f"Warning: Error querying old location for device {device_id}: {str(e)}")
+            
+            all_readings.extend(device_readings)
         except Exception as e:
             # If a device has no readings or error, continue with other devices
             print(f"Warning: Error querying device {device_id}: {str(e)}")
@@ -458,4 +497,39 @@ def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_li
     all_readings = all_readings[:limit]
     
     return (all_readings, len(device_ids))
+
+
+def write_reading_dual(reading_doc, device_id, user_id=None):
+    """
+    Write a reading to both old and new Firestore locations (dual-write).
+    
+    Old location: /devices/{deviceId}/readings/{readingId}
+    New location: /users/{userId}/devices/{deviceId}/readings/{readingId} (if user_id provided)
+    
+    Args:
+        reading_doc: Dictionary containing reading data
+        device_id: Device identifier
+        user_id: Optional user ID. If provided, writes to new location too.
+        
+    Returns:
+        tuple: (old_ref, new_ref) where new_ref may be None if user_id not provided
+    """
+    db = get_firestore()
+    
+    # Always write to old location (for backward compatibility)
+    old_ref = db.collection('devices').document(device_id).collection('readings').document()
+    old_ref.set(reading_doc)
+    
+    new_ref = None
+    # Write to new location if user_id is available
+    if user_id:
+        try:
+            new_ref = db.collection('users').document(user_id).collection('devices').document(device_id).collection('readings').document()
+            new_ref.set(reading_doc)
+        except Exception as e:
+            # If new location write fails, log but don't fail the request
+            # Old location write already succeeded, so we maintain backward compatibility
+            print(f"Warning: Failed to write to new location for device {device_id}, user {user_id}: {str(e)}")
+    
+    return (old_ref, new_ref)
 
