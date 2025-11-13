@@ -5,7 +5,8 @@ Firebase client initialization and helper functions.
 import os
 import json
 import firebase_admin
-from firebase_admin import credentials, firestore, storage
+from firebase_admin import credentials, firestore, storage, auth
+from firebase_admin.exceptions import FirebaseError
 
 # Global reference to Firestore client
 _firestore_client = None
@@ -90,4 +91,52 @@ def get_storage_bucket():
             return None
     
     return _storage_bucket
+
+
+def verify_id_token(id_token):
+    """
+    Verify a Firebase ID token and return the decoded token.
+    
+    Args:
+        id_token: Firebase ID token string from the client
+        
+    Returns:
+        dict: Decoded token containing user information (uid, email, etc.)
+        
+    Raises:
+        ValueError: If token is invalid or expired
+    """
+    initialize_firebase()
+    try:
+        decoded_token = auth.verify_id_token(id_token)
+        return decoded_token
+    except (ValueError, FirebaseError) as e:
+        # Token is invalid, expired, or revoked
+        # FirebaseError includes InvalidIdTokenError, ExpiredIdTokenError, etc.
+        raise ValueError(f"Invalid ID token: {str(e)}")
+
+
+def get_user_from_token(id_token):
+    """
+    Extract user information from a Firebase ID token.
+    
+    Args:
+        id_token: Firebase ID token string from the client
+        
+    Returns:
+        dict: User information with keys: uid, email, name (if available)
+        
+    Raises:
+        ValueError: If token is invalid or expired
+    """
+    decoded_token = verify_id_token(id_token)
+    
+    user_info = {
+        'uid': decoded_token.get('uid'),
+        'email': decoded_token.get('email'),
+        'name': decoded_token.get('name'),
+        'email_verified': decoded_token.get('email_verified', False)
+    }
+    
+    return user_info
 

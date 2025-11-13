@@ -5,8 +5,9 @@ Flask routes for GrowSense API endpoints.
 import os
 import json
 from datetime import datetime
-from flask import Blueprint, request, jsonify, render_template
-from app.firebase_client import get_firestore
+from functools import wraps
+from flask import Blueprint, request, jsonify, render_template, g
+from app.firebase_client import get_firestore, get_user_from_token
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
 bp = Blueprint('main', __name__)
@@ -44,6 +45,43 @@ def validate_api_key(device_id, api_key):
         return False
     
     return api_key == expected_key
+
+
+def require_auth(f):
+    """
+    Decorator to require Firebase authentication for a route.
+    
+    Expects Authorization header: "Bearer <firebase_id_token>"
+    Sets g.user with user info (uid, email, etc.) if authenticated.
+    
+    Returns 401 if token is missing or invalid.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        
+        if not auth_header:
+            return jsonify({"error": "Missing Authorization header"}), 401
+        
+        # Extract token from "Bearer <token>"
+        try:
+            scheme, token = auth_header.split(' ', 1)
+            if scheme.lower() != 'bearer':
+                return jsonify({"error": "Invalid authorization scheme. Use 'Bearer <token>'"}), 401
+        except ValueError:
+            return jsonify({"error": "Invalid Authorization header format. Use 'Bearer <token>'"}), 401
+        
+        # Verify token and get user info
+        try:
+            user_info = get_user_from_token(token)
+            # Store user info in Flask's g object for use in route handler
+            g.user = user_info
+        except ValueError as e:
+            return jsonify({"error": "Invalid or expired token", "details": str(e)}), 401
+        
+        return f(*args, **kwargs)
+    
+    return decorated_function
 
 
 @bp.route('/')
@@ -196,4 +234,98 @@ def health():
         "service": "GrowSense API",
         "timestamp": datetime.utcnow().isoformat() + 'Z'
     }), 200
+
+
+# ========================================
+# Authentication Endpoints
+# ========================================
+
+@bp.route('/auth/login', methods=['POST'])
+def auth_login():
+    """
+    Verify a Firebase ID token and return user information.
+    
+    Expected JSON payload:
+    {
+        "id_token": "firebase-id-token-string"
+    }
+    
+    Returns:
+        JSON with user information (uid, email, etc.)
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "Invalid JSON or empty body"}), 400
+        
+        id_token = data.get('id_token')
+        
+        if not id_token:
+            return jsonify({"error": "Missing id_token"}), 400
+        
+        # Verify token and get user info
+        try:
+            user_info = get_user_from_token(id_token)
+        except ValueError as e:
+            return jsonify({"error": "Invalid or expired token", "details": str(e)}), 401
+        
+        return jsonify({
+            "success": True,
+            "user": user_info
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in auth_login: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@bp.route('/auth/me', methods=['GET'])
+@require_auth
+def auth_me():
+    """
+    Get current authenticated user information.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Returns:
+        JSON with user information (uid, email, etc.)
+    """
+    try:
+        # User info is already set in g.user by require_auth decorator
+        return jsonify({
+            "success": True,
+            "user": g.user
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in auth_me: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@bp.route('/auth/logout', methods=['POST'])
+@require_auth
+def auth_logout():
+    """
+    Logout endpoint (placeholder for session cleanup if needed).
+    
+    Note: Firebase tokens are stateless, so this is mainly for
+    client-side cleanup. The token will naturally expire.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Returns:
+        JSON confirmation
+    """
+    try:
+        # In a stateless token system, logout is handled client-side
+        # This endpoint exists for consistency and future session management
+        return jsonify({
+            "success": True,
+            "message": "Logged out successfully"
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in auth_logout: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
