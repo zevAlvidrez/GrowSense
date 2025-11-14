@@ -533,3 +533,130 @@ def write_reading_dual(reading_doc, device_id, user_id=None):
     
     return (old_ref, new_ref)
 
+
+def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
+    """
+    Prepare user's device data for Gemini analysis.
+    Gets recent readings and calculates summaries for each device.
+    
+    Args:
+        user_id: Firebase user ID
+        time_range_hours: Number of hours of data to include (default: 24)
+        limit_per_device: Maximum readings per device to analyze (default: 50)
+        
+    Returns:
+        dict: Formatted data structure ready for Gemini analysis
+    """
+    from datetime import datetime, timedelta
+    
+    # Get user's devices
+    devices = get_user_devices(user_id)
+    
+    if not devices:
+        return {
+            "user_id": user_id,
+            "device_count": 0,
+            "devices": [],
+            "overall_summary": {
+                "total_readings": 0,
+                "time_range": f"last_{time_range_hours}_hours"
+            }
+        }
+    
+    # Get recent readings for all devices
+    readings, device_count = get_user_device_readings(
+        user_id,
+        device_ids=None,  # All devices
+        limit=limit_per_device * len(devices),  # Total limit
+        per_device_limit=limit_per_device
+    )
+    
+    # Organize readings by device
+    readings_by_device = {}
+    for reading in readings:
+        device_id = reading.get('device_id')
+        if device_id not in readings_by_device:
+            readings_by_device[device_id] = []
+        readings_by_device[device_id].append(reading)
+    
+    # Build formatted data structure
+    formatted_devices = []
+    all_temperatures = []
+    all_humidities = []
+    all_soil_moistures = []
+    all_lights = []
+    
+    for device in devices:
+        device_id = device['device_id']
+        device_readings = readings_by_device.get(device_id, [])
+        
+        # Calculate summary statistics
+        temperatures = [r.get('temperature') for r in device_readings if r.get('temperature') is not None]
+        humidities = [r.get('humidity') for r in device_readings if r.get('humidity') is not None]
+        soil_moistures = [r.get('soil_moisture') for r in device_readings if r.get('soil_moisture') is not None]
+        lights = [r.get('light') for r in device_readings if r.get('light') is not None]
+        
+        # Calculate averages
+        avg_temp = sum(temperatures) / len(temperatures) if temperatures else None
+        avg_humidity = sum(humidities) / len(humidities) if humidities else None
+        avg_soil = sum(soil_moistures) / len(soil_moistures) if soil_moistures else None
+        avg_light = sum(lights) / len(lights) if lights else None
+        
+        # Collect for overall summary
+        all_temperatures.extend(temperatures)
+        all_humidities.extend(humidities)
+        all_soil_moistures.extend(soil_moistures)
+        all_lights.extend(lights)
+        
+        # Prepare device data (remove internal fields like _source)
+        clean_readings = []
+        for reading in device_readings:
+            clean_reading = {
+                'timestamp': reading.get('timestamp') or reading.get('server_timestamp'),
+                'temperature': reading.get('temperature'),
+                'humidity': reading.get('humidity'),
+                'light': reading.get('light'),
+                'soil_moisture': reading.get('soil_moisture')
+            }
+            # Remove None values
+            clean_reading = {k: v for k, v in clean_reading.items() if v is not None}
+            clean_readings.append(clean_reading)
+        
+        device_data = {
+            'device_id': device_id,
+            'name': device.get('name', device_id),
+            'last_seen': device.get('last_seen'),
+            'recent_readings': clean_readings,
+            'summary': {
+                'reading_count': len(device_readings),
+                'avg_temperature': round(avg_temp, 2) if avg_temp else None,
+                'avg_humidity': round(avg_humidity, 2) if avg_humidity else None,
+                'avg_light': round(avg_light, 0) if avg_light else None,
+                'avg_soil_moisture': round(avg_soil, 2) if avg_soil else None,
+                'min_temperature': round(min(temperatures), 2) if temperatures else None,
+                'max_temperature': round(max(temperatures), 2) if temperatures else None,
+                'min_humidity': round(min(humidities), 2) if humidities else None,
+                'max_humidity': round(max(humidities), 2) if humidities else None,
+                'min_soil_moisture': round(min(soil_moistures), 2) if soil_moistures else None,
+                'max_soil_moisture': round(max(soil_moistures), 2) if soil_moistures else None
+            }
+        }
+        formatted_devices.append(device_data)
+    
+    # Overall summary
+    overall_summary = {
+        'total_readings': len(readings),
+        'time_range': f'last_{time_range_hours}_hours',
+        'avg_temperature': round(sum(all_temperatures) / len(all_temperatures), 2) if all_temperatures else None,
+        'avg_humidity': round(sum(all_humidities) / len(all_humidities), 2) if all_humidities else None,
+        'avg_soil_moisture': round(sum(all_soil_moistures) / len(all_soil_moistures), 2) if all_soil_moistures else None,
+        'avg_light': round(sum(all_lights) / len(all_lights), 0) if all_lights else None
+    }
+    
+    return {
+        'user_id': user_id,
+        'device_count': len(formatted_devices),
+        'devices': formatted_devices,
+        'overall_summary': overall_summary
+    }
+

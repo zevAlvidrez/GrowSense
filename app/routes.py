@@ -16,8 +16,10 @@ from app.firebase_client import (
     remove_device_from_user,
     get_device_info,
     get_user_device_readings,
-    write_reading_dual
+    write_reading_dual,
+    prepare_data_for_gemini
 )
+from app.gemini_client import get_gemini_advice
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
 bp = Blueprint('main', __name__)
@@ -649,5 +651,70 @@ def get_user_device_data(device_id):
         
     except Exception as e:
         print(f"Error in get_user_device_data: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+# ========================================
+# Gemini Advice Endpoints
+# ========================================
+
+@bp.route('/user_advice', methods=['GET'])
+@require_auth
+def get_user_advice():
+    """
+    Get plant care advice from Gemini AI based on user's sensor data.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Query parameters:
+        time_range_hours: Number of hours of data to analyze (default: 24, max: 168)
+        limit_per_device: Maximum readings per device to include (default: 50, max: 200)
+    
+    Returns:
+        JSON with structured advice including:
+        - overall_advice: General assessment
+        - device_advice: Device-specific recommendations
+        - insights: Key observations
+    """
+    try:
+        user_id = g.user['uid']
+        
+        # Parse query parameters
+        try:
+            time_range_hours = int(request.args.get('time_range_hours', 24))
+            time_range_hours = min(time_range_hours, 168)  # Cap at 7 days
+        except ValueError:
+            time_range_hours = 24
+        
+        try:
+            limit_per_device = int(request.args.get('limit_per_device', 50))
+            limit_per_device = min(limit_per_device, 200)  # Cap at 200
+        except ValueError:
+            limit_per_device = 50
+        
+        # Prepare data for Gemini
+        formatted_data = prepare_data_for_gemini(
+            user_id,
+            time_range_hours=time_range_hours,
+            limit_per_device=limit_per_device
+        )
+        
+        # Get advice from Gemini (placeholder - groupmate will implement)
+        advice = get_gemini_advice(formatted_data)
+        
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "data_summary": {
+                "device_count": formatted_data.get('device_count', 0),
+                "readings_analyzed": formatted_data.get('overall_summary', {}).get('total_readings', 0),
+                "time_range": formatted_data.get('overall_summary', {}).get('time_range', 'unknown')
+            },
+            "advice": advice
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in get_user_advice: {str(e)}")
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
