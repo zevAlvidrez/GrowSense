@@ -138,10 +138,10 @@ void setup() {
   float humidity = readHumidity();
   int light = readLight();
   float soilMoisture = readSoilMoisture();
-  float UVlight = readUVLight();
+  float UVlight = readUVlight();
   
   // Upload data to server
-  bool success = uploadData(temperature, humidity, light, soilMoisture);
+  bool success = uploadData(temperature, humidity, light, soilMoisture, UVlight);
   
   if (success) {
     if (ENABLE_SERIAL_DEBUG) {
@@ -270,7 +270,7 @@ bool connectToWiFi() {
 // HTTP Upload Function
 // ============================================
 
-bool uploadData(float temperature, float humidity, int light, float soilMoisture) {
+bool uploadData(float temperature, float humidity, int light, float soilMoisture, float UVlight) {
   for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     if (ENABLE_SERIAL_DEBUG && attempt > 1) {
       Serial.print("Retry attempt ");
@@ -303,6 +303,9 @@ bool uploadData(float temperature, float humidity, int light, float soilMoisture
     }
     if (!isnan(soilMoisture)) {
       doc["soil_moisture"] = soilMoisture;
+    }
+    if (!isnan(UVlight)){
+      doc["UVlight"] = UVlight;
     }
     
     // Add boot count for debugging
@@ -517,7 +520,7 @@ float readSoilMoisture() {
   return moisturePercent;
 }
 
-float readUVLight(){
+float readUVlight(){
   int rawValue = analogRead(UV_PIN);
   float voltage = rawValue * (3.3 / 4095.0);  // For 3.3V reference
   float uvIndex = voltage / 0.1;
@@ -529,7 +532,7 @@ float readUVLight(){
     Serial.print(uvIndex, 1);
     Serial.println(")");
   }
-  return UVLight;
+  return UVlight;
 }
 
 // ============================================
