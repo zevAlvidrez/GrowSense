@@ -45,7 +45,7 @@ const int SOLAR_PIN = 1;  // Analog input pin
 // WIFI_SSID, WIFI_PASSWORD, DEVICE_ID, API_KEY
 
 // Sleep configuration
-const uint64_t SLEEP_DURATION_SECONDS = 60;  // Sleep for 60 seconds between readings
+const uint64_t SLEEP_DURATION_SECONDS = 15;  // Sleep for 15 seconds between readings
                                                // Adjust this value based on your needs:
                                                // 60 = 1 minute
                                                // 300 = 5 minutes  
@@ -53,7 +53,7 @@ const uint64_t SLEEP_DURATION_SECONDS = 60;  // Sleep for 60 seconds between rea
                                                // 3600 = 1 hour
 
 // WiFi connection timeout
-const int WIFI_CONNECT_TIMEOUT_MS = 15000;   // 15 seconds max for WiFi connection
+const int WIFI_CONNECT_TIMEOUT_MS = 30000;   // 30 seconds max for WiFi connection
 
 // HTTP configuration
 const int HTTP_TIMEOUT = 15000;  // 15 second timeout
@@ -138,6 +138,7 @@ void setup() {
   float humidity = readHumidity();
   int light = readLight();
   float soilMoisture = readSoilMoisture();
+  float UVlight = readUVLight();
   
   // Upload data to server
   bool success = uploadData(temperature, humidity, light, soilMoisture);
@@ -216,6 +217,11 @@ bool connectToWiFi() {
   
   // Set WiFi to station mode and disconnect from any previous connection
   WiFi.mode(WIFI_STA);
+  Serial.println("Scanning for networks...");
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < n; i++) {
+    Serial.println(WiFi.SSID(i));
+  }
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   
   // Optional: Set WiFi power save mode to aggressive for faster sleep
@@ -470,6 +476,9 @@ int readLight() {
   
   return lux;
 }
+const int SOIL_MOISTURE_PIN = 32 //Change accordingly to actualy pin
+const int DRY_VALUE = 0; //will need to get an actual reading in dry air
+const int WET_VALUE = 0; //will need to get an actual reading in water
 
 float readSoilMoisture() {
   /*
@@ -493,7 +502,34 @@ float readSoilMoisture() {
   //   Serial.print(dummySoil);
   //   Serial.println(" % (dummy data)");
   // }
-  return 0;
+  int rawValue = analogRead(SOIL_MOISTURE_PIN);
+
+  float moisturePercent = map(rawValue, DRY_VALUE, WET_VALUE, 0, 100);
+  moisturePercent = constrain(moisturePercent, 0, 100);
+
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.print("Soil Moisture: ");
+    Serial.print(rawValue);
+    Serial.print(" raw (");
+    Serial.print(moisturePercent);
+    Serial.println(" %)");
+  }
+  return moisturePercent;
+}
+
+float readUVLight(){
+  int rawValue = analogRead(UV_PIN);
+  float voltage = rawValue * (3.3 / 4095.0);  // For 3.3V reference
+  float uvIndex = voltage / 0.1;
+  
+  if (ENABLE_SERIAL_DEBUG) {
+    Serial.print("UV: ");
+    Serial.print(voltage, 2);
+    Serial.print(" V (UV Index: ");
+    Serial.print(uvIndex, 1);
+    Serial.println(")");
+  }
+  return UVLight;
 }
 
 // ============================================
