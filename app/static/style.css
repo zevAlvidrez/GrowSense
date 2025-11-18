@@ -1,22 +1,31 @@
 /* ========================================
    GrowSense Dashboard Styles
-   Easy to customize - modify CSS variables below!
+   User-centric multi-device dashboard
+   Color scheme: Mild greens with yellow/blue accents
    ======================================== */
 
 :root {
-    /* Colors - Change these to customize your theme */
-    --primary-color: #4CAF50;
-    --primary-dark: #388E3C;
-    --secondary-color: #2196F3;
-    --background: #f5f5f5;
-    --card-bg: #ffffff;
-    --text-primary: #333333;
-    --text-secondary: #666666;
-    --border-color: #e0e0e0;
-    --shadow: 0 2px 4px rgba(0,0,0,0.1);
-    --shadow-hover: 0 4px 8px rgba(0,0,0,0.15);
+    /* Color Palette - Mild greens with accents */
+    --primary-green: #4CAF50;
+    --primary-green-light: #66BB6A;
+    --primary-green-lighter: #81C784;
+    --primary-green-dark: #388E3C;
     
-    /* Spacing - Adjust these for tighter/looser layout */
+    --accent-yellow: #FFC107;
+    --accent-yellow-light: #FFD54F;
+    
+    --accent-blue: #42A5F5;
+    --accent-blue-light: #64B5F6;
+    
+    --background: #F1F8F4; /* Very light green */
+    --card-bg: #ffffff;
+    --text-primary: #2E7D32;
+    --text-secondary: #66BB6A;
+    --border-color: #C8E6C9;
+    --shadow: 0 2px 8px rgba(76, 175, 80, 0.1);
+    --shadow-hover: 0 4px 12px rgba(76, 175, 80, 0.15);
+    
+    /* Spacing */
     --spacing-xs: 0.5rem;
     --spacing-sm: 1rem;
     --spacing-md: 1.5rem;
@@ -50,6 +59,76 @@ body {
 }
 
 /* ========================================
+   Login Modal
+   ======================================== */
+
+.login-modal {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(46, 125, 50, 0.9);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.login-modal-content {
+    background: white;
+    padding: var(--spacing-xl);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+}
+
+.login-modal-content h2 {
+    color: var(--primary-green);
+    margin-bottom: var(--spacing-sm);
+    font-size: var(--font-size-2xl);
+}
+
+.login-modal-content p {
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-lg);
+}
+
+.btn-google {
+    background: white;
+    color: #333;
+    border: 1px solid var(--border-color);
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    width: 100%;
+    justify-content: center;
+}
+
+.btn-google:hover {
+    background: #f5f5f5;
+    border-color: var(--primary-green);
+    box-shadow: var(--shadow);
+}
+
+.login-error {
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-sm);
+    background: #ffebee;
+    color: #c62828;
+    border-radius: 6px;
+    font-size: var(--font-size-sm);
+}
+
+/* ========================================
    Dashboard Layout
    ======================================== */
 
@@ -61,12 +140,20 @@ body {
 
 /* Header Section */
 .header {
-    background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+    background: linear-gradient(135deg, var(--primary-green) 0%, var(--primary-green-dark) 100%);
     color: white;
     padding: var(--spacing-lg);
     border-radius: 12px;
     margin-bottom: var(--spacing-lg);
     box-shadow: var(--shadow);
+}
+
+.header-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
 }
 
 .header-content h1 {
@@ -79,7 +166,266 @@ body {
     opacity: 0.9;
 }
 
-/* Controls Section */
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+}
+
+.user-email {
+    font-size: var(--font-size-sm);
+    opacity: 0.9;
+}
+
+.btn-secondary {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* ========================================
+   Advice Section (at top)
+   ======================================== */
+
+.advice-section {
+    background: var(--card-bg);
+    padding: var(--spacing-lg);
+    border-radius: 12px;
+    margin-bottom: var(--spacing-lg);
+    box-shadow: var(--shadow);
+    border-left: 4px solid var(--accent-yellow);
+}
+
+.advice-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-md);
+}
+
+.advice-header h2 {
+    color: var(--primary-green);
+    font-size: var(--font-size-xl);
+}
+
+.general-advice {
+    background: #F1F8F4;
+    padding: var(--spacing-md);
+    border-radius: 8px;
+    margin-bottom: var(--spacing-md);
+}
+
+.general-advice p {
+    color: var(--text-primary);
+    font-size: var(--font-size-base);
+    line-height: 1.8;
+}
+
+.insights-list {
+    margin-top: var(--spacing-md);
+}
+
+.insights-list h3 {
+    color: var(--primary-green);
+    font-size: var(--font-size-lg);
+    margin-bottom: var(--spacing-sm);
+}
+
+.insights-list ul {
+    list-style: none;
+    padding-left: 0;
+}
+
+.insights-list li {
+    padding: var(--spacing-xs) 0;
+    padding-left: var(--spacing-md);
+    position: relative;
+    color: var(--text-primary);
+}
+
+.insights-list li::before {
+    content: "•";
+    color: var(--accent-blue);
+    font-weight: bold;
+    position: absolute;
+    left: 0;
+}
+
+/* ========================================
+   Device Cards Grid (2x2)
+   ======================================== */
+
+.devices-grid-section {
+    margin-bottom: var(--spacing-lg);
+}
+
+.devices-grid-section h2 {
+    color: var(--primary-green);
+    margin-bottom: var(--spacing-md);
+    font-size: var(--font-size-xl);
+}
+
+.devices-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-lg);
+}
+
+.device-card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: var(--spacing-md);
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border-color);
+    transition: all 0.3s;
+}
+
+.device-card:hover {
+    box-shadow: var(--shadow-hover);
+    transform: translateY(-2px);
+}
+
+.device-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-md);
+    padding-bottom: var(--spacing-sm);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.device-card-header h3 {
+    color: var(--primary-green);
+    font-size: var(--font-size-lg);
+}
+
+.device-status {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+}
+
+.status-online {
+    color: var(--primary-green);
+}
+
+.status-offline {
+    color: var(--text-secondary);
+    opacity: 0.6;
+}
+
+.device-readings {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
+}
+
+.device-reading {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs);
+    background: #F1F8F4;
+    border-radius: 6px;
+}
+
+.device-reading .reading-icon {
+    font-size: 1.5rem;
+}
+
+.device-reading .reading-value {
+    font-size: var(--font-size-lg);
+    font-weight: bold;
+    color: var(--primary-green);
+}
+
+.device-reading .reading-unit {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+}
+
+.device-chart-container {
+    position: relative;
+    height: 200px;
+    margin-bottom: var(--spacing-sm);
+}
+
+/* Device-specific advice */
+.device-advice {
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-sm);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent-yellow);
+    background: #FFF9E6;
+}
+
+.device-advice.priority-urgent {
+    border-left-color: #E53935;
+    background: #FFEBEE;
+}
+
+.device-advice.priority-high {
+    border-left-color: #FF9800;
+    background: #FFF3E0;
+}
+
+.device-advice.priority-medium {
+    border-left-color: var(--accent-yellow);
+    background: #FFF9E6;
+}
+
+.device-advice.priority-low {
+    border-left-color: var(--accent-blue);
+    background: #E3F2FD;
+}
+
+.device-advice-text {
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--spacing-xs);
+}
+
+.device-recommendations {
+    list-style: none;
+    padding-left: var(--spacing-md);
+    margin-top: var(--spacing-xs);
+}
+
+.device-recommendations li {
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    padding: 0.25rem 0;
+    position: relative;
+}
+
+.device-recommendations li::before {
+    content: "→";
+    color: var(--primary-green);
+    position: absolute;
+    left: -1rem;
+}
+
+.no-devices-message {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: var(--spacing-xl);
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* ========================================
+   Controls Section
+   ======================================== */
+
 .controls {
     background: var(--card-bg);
     padding: var(--spacing-md);
@@ -92,43 +438,12 @@ body {
     box-shadow: var(--shadow);
 }
 
-.control-group {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-}
-
-.control-group label {
-    font-weight: 500;
-    color: var(--text-secondary);
-}
-
-select {
-    padding: 0.5rem 1rem;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    font-size: var(--font-size-base);
-    background: white;
-    cursor: pointer;
-    transition: border-color 0.2s;
-}
-
-select:hover {
-    border-color: var(--primary-color);
-}
-
-select:focus {
-    outline: none;
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
-}
-
 .btn-primary {
-    background: var(--primary-color);
+    background: var(--primary-green);
     color: white;
     border: none;
-    padding: 0.5rem 1.5rem;
-    border-radius: 6px;
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
     font-size: var(--font-size-base);
     font-weight: 500;
     cursor: pointer;
@@ -136,9 +451,15 @@ select:focus {
 }
 
 .btn-primary:hover {
-    background: var(--primary-dark);
+    background: var(--primary-green-dark);
     transform: translateY(-1px);
     box-shadow: var(--shadow-hover);
+}
+
+.btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
 }
 
 .auto-refresh {
@@ -154,98 +475,6 @@ select:focus {
 }
 
 /* ========================================
-   Current Readings Section
-   ======================================== */
-
-.current-readings {
-    background: var(--card-bg);
-    padding: var(--spacing-lg);
-    border-radius: 8px;
-    margin-bottom: var(--spacing-lg);
-    box-shadow: var(--shadow);
-}
-
-.current-readings h2 {
-    margin-bottom: var(--spacing-md);
-    color: var(--text-primary);
-}
-
-.readings-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--spacing-md);
-}
-
-.reading-card {
-    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-    padding: var(--spacing-md);
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-md);
-    transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.reading-card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-hover);
-}
-
-.reading-icon {
-    font-size: 2.5rem;
-}
-
-.reading-content {
-    flex: 1;
-}
-
-.reading-label {
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
-    margin-bottom: 0.25rem;
-}
-
-.reading-value {
-    font-size: var(--font-size-xl);
-    font-weight: bold;
-    color: var(--primary-color);
-}
-
-.reading-unit {
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
-}
-
-.last-updated {
-    margin-top: var(--spacing-md);
-    text-align: right;
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
-}
-
-/* ========================================
-   Chart Section
-   ======================================== */
-
-.chart-section {
-    background: var(--card-bg);
-    padding: var(--spacing-lg);
-    border-radius: 8px;
-    margin-bottom: var(--spacing-lg);
-    box-shadow: var(--shadow);
-}
-
-.chart-section h2 {
-    margin-bottom: var(--spacing-md);
-    color: var(--text-primary);
-}
-
-.chart-container {
-    position: relative;
-    height: 400px;
-}
-
-/* ========================================
    Data Table Section
    ======================================== */
 
@@ -258,8 +487,8 @@ select:focus {
 }
 
 .data-table-section h2 {
+    color: var(--primary-green);
     margin-bottom: var(--spacing-md);
-    color: var(--text-primary);
 }
 
 .table-container {
@@ -281,11 +510,13 @@ th {
     font-weight: 600;
     color: var(--text-secondary);
     border-bottom: 2px solid var(--border-color);
+    font-size: var(--font-size-sm);
 }
 
 td {
     padding: var(--spacing-sm);
     border-bottom: 1px solid var(--border-color);
+    font-size: var(--font-size-sm);
 }
 
 tbody tr:hover {
@@ -315,13 +546,57 @@ tbody tr:hover {
     color: var(--text-secondary);
 }
 
+.status-message.loading {
+    color: var(--accent-blue);
+}
+
+.status-message.success {
+    color: var(--primary-green);
+}
+
+.status-message.error {
+    color: #E53935;
+}
+
+.status-message.warning {
+    color: var(--accent-yellow);
+}
+
 /* ========================================
    Responsive Design
    ======================================== */
 
+@media (max-width: 1024px) {
+    .devices-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 @media (max-width: 768px) {
     .dashboard {
         padding: var(--spacing-sm);
+    }
+    
+    .header-content {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .header-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .devices-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .device-readings {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .device-chart-container {
+        height: 150px;
     }
     
     .controls {
@@ -329,21 +604,8 @@ tbody tr:hover {
         align-items: stretch;
     }
     
-    .control-group {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    
     .auto-refresh {
         margin-left: 0;
-    }
-    
-    .readings-grid {
-        grid-template-columns: 1fr;
-    }
-    
-    .chart-container {
-        height: 300px;
     }
 }
 
@@ -364,4 +626,3 @@ tbody tr:hover {
 .pulse {
     animation: pulse 1.5s ease-in-out infinite;
 }
-

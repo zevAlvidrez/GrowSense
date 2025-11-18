@@ -125,7 +125,61 @@ def require_auth(f):
 @bp.route('/')
 def index():
     """Serve the dashboard HTML page."""
-    return render_template('index.html')
+    # Get Firebase web config from environment (for frontend Auth)
+    # Format: FIREBASE_WEB_CONFIG='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'
+    firebase_config_json = os.environ.get('FIREBASE_WEB_CONFIG', '{}')
+    try:
+        firebase_config = json.loads(firebase_config_json) if firebase_config_json else {}
+    except json.JSONDecodeError:
+        print("Warning: Invalid FIREBASE_WEB_CONFIG JSON, using empty config")
+        firebase_config = {}
+    
+    return render_template('index.html', firebase_config=firebase_config)
+
+
+@bp.route('/firebase-config')
+def firebase_config():
+    """
+    Get Firebase web configuration for frontend.
+    Returns the Firebase web app config needed for client-side authentication.
+    Useful for debugging - check if config is loaded correctly.
+    """
+    firebase_config_json = os.environ.get('FIREBASE_WEB_CONFIG', '{}')
+    
+    # Strip any whitespace and handle empty strings
+    if firebase_config_json:
+        firebase_config_json = firebase_config_json.strip()
+    
+    # Debug logging
+    print(f"DEBUG: FIREBASE_WEB_CONFIG length: {len(firebase_config_json) if firebase_config_json else 0}")
+    print(f"DEBUG: First 100 chars: {repr(firebase_config_json[:100]) if firebase_config_json else 'empty'}")
+    
+    try:
+        if not firebase_config_json or firebase_config_json == '{}':
+            return jsonify({
+                "config": {},
+                "has_config": False,
+                "message": "Config missing - set FIREBASE_WEB_CONFIG environment variable"
+            }), 200
+        
+        firebase_config = json.loads(firebase_config_json)
+        has_config = bool(firebase_config and firebase_config.get('apiKey'))
+        return jsonify({
+            "config": firebase_config,
+            "has_config": has_config,
+            "message": "Config loaded successfully" if has_config else "Config missing - set FIREBASE_WEB_CONFIG environment variable"
+        }), 200
+    except json.JSONDecodeError as e:
+        print(f"ERROR parsing FIREBASE_WEB_CONFIG: {e}")
+        print(f"ERROR at position: {e.pos}")
+        print(f"ERROR context: {repr(firebase_config_json[max(0, e.pos-30):e.pos+30]) if firebase_config_json else 'empty'}")
+        return jsonify({
+            "error": "Invalid Firebase config JSON",
+            "details": str(e),
+            "position": e.pos,
+            "raw_length": len(firebase_config_json) if firebase_config_json else 0,
+            "raw_preview": firebase_config_json[:150] if firebase_config_json else "empty"
+        }), 500
 
 
 @bp.route('/upload_data', methods=['POST'])

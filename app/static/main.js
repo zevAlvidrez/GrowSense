@@ -1,210 +1,461 @@
 // ========================================
 // GrowSense Dashboard JavaScript
-// Easy to customize and extend
+// User-centric multi-device dashboard
 // ========================================
 
 // Configuration
 const CONFIG = {
-    apiBaseUrl: window.location.origin, // Use current host (works locally and on Render)
-    autoRefreshInterval: 60000, // 60 seconds (change this to adjust refresh rate)
-    chartMaxPoints: 50, // Maximum points to show on chart (change for more/less detail)
+    apiBaseUrl: window.location.origin,
+    autoRefreshInterval: 60000, // 60 seconds
+    chartMaxPoints: 50,
+    maxDevices: 4, // Maximum devices to display
 };
 
 // Global state
-let chart = null;
+let firebaseAuth = null;
+let currentUser = null;
+let idToken = null;
+let deviceCharts = {}; // Object to store charts: {deviceId: chart}
 let autoRefreshTimer = null;
-let currentDeviceId = 'test_device';
-let currentLimit = 50;
+let userDevices = [];
+let userData = null;
+let userAdvice = null;
 
 // ========================================
-// Initialization
+// Firebase Auth Initialization
 // ========================================
 
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('🌱 GrowSense Dashboard initialized');
-    
-    // Set up event listeners
-    setupEventListeners();
-    
-    // Initialize chart
-    initializeChart();
-    
-    // Load initial data
-    fetchAndDisplayData();
-    
-    // Start auto-refresh if enabled
-    if (document.getElementById('auto-refresh-toggle').checked) {
-        startAutoRefresh();
+function initializeFirebase() {
+    if (!FIREBASE_CONFIG || !FIREBASE_CONFIG.apiKey) {
+        console.error('Firebase config not found. Please set FIREBASE_WEB_CONFIG environment variable.');
+        console.error('Current FIREBASE_CONFIG:', FIREBASE_CONFIG);
+        showLoginError('Firebase configuration missing. Please set FIREBASE_WEB_CONFIG environment variable. See FIREBASE_WEB_CONFIG_SETUP.md for instructions.');
+        return;
     }
-});
 
-// ========================================
-// Event Listeners
-// ========================================
-
-function setupEventListeners() {
-    // Device selection
-    document.getElementById('device-select').addEventListener('change', (e) => {
-        currentDeviceId = e.target.value;
-        fetchAndDisplayData();
-    });
-    
-    // Limit selection
-    document.getElementById('limit-select').addEventListener('change', (e) => {
-        currentLimit = parseInt(e.target.value);
-        fetchAndDisplayData();
-    });
-    
-    // Refresh button
-    document.getElementById('refresh-btn').addEventListener('click', () => {
-        fetchAndDisplayData();
-    });
-    
-    // Auto-refresh toggle
-    document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
-        if (e.target.checked) {
-            startAutoRefresh();
-        } else {
-            stopAutoRefresh();
-        }
-    });
+    try {
+        firebase.initializeApp(FIREBASE_CONFIG);
+        firebaseAuth = firebase.auth();
+        
+        // Listen for auth state changes
+        firebaseAuth.onAuthStateChanged((user) => {
+            if (user) {
+                handleAuthSuccess(user);
+            } else {
+                handleAuthLogout();
+            }
+        });
+        
+        console.log('Firebase initialized');
+    } catch (error) {
+        console.error('Firebase initialization error:', error);
+        showLoginError('Failed to initialize authentication.');
+    }
 }
 
 // ========================================
-// Data Fetching
+// Authentication Functions
 // ========================================
 
-async function fetchAndDisplayData() {
-    updateStatus('Loading data...', 'loading');
-    
+async function handleAuthSuccess(user) {
+    currentUser = user;
     try {
-        const url = `${CONFIG.apiBaseUrl}/get_data?device_id=${currentDeviceId}&limit=${currentLimit}`;
-        const response = await fetch(url);
+        idToken = await user.getIdToken();
+        console.log('User authenticated:', user.email);
+        
+        // Hide login modal, show dashboard
+        document.getElementById('login-modal').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        
+        // Update user email in header
+        document.getElementById('user-email').textContent = user.email || 'User';
+        
+        // Load user data
+        await loadUserData();
+    } catch (error) {
+        console.error('Error getting ID token:', error);
+        showLoginError('Failed to get authentication token.');
+    }
+}
+
+function handleAuthLogout() {
+    currentUser = null;
+    idToken = null;
+    userDevices = [];
+    userData = null;
+    userAdvice = null;
+    
+    // Clear all charts
+    Object.values(deviceCharts).forEach(chart => chart.destroy());
+    deviceCharts = {};
+    
+    // Show login modal, hide dashboard
+    document.getElementById('login-modal').style.display = 'flex';
+    document.getElementById('dashboard').style.display = 'none';
+    
+    // Clear displays
+    clearAllDisplays();
+}
+
+async function signInWithGoogle() {
+    if (!firebaseAuth) {
+        showLoginError('Firebase not initialized');
+        return;
+    }
+    
+    const provider = new firebase.auth.GoogleAuthProvider();
+    try {
+        hideLoginError();
+        await firebaseAuth.signInWithPopup(provider);
+    } catch (error) {
+        console.error('Sign-in error:', error);
+        showLoginError(error.message || 'Failed to sign in. Please try again.');
+    }
+}
+
+async function signOut() {
+    try {
+        await firebaseAuth.signOut();
+    } catch (error) {
+        console.error('Sign-out error:', error);
+    }
+}
+
+function showLoginError(message) {
+    const errorEl = document.getElementById('login-error');
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+}
+
+function hideLoginError() {
+    document.getElementById('login-error').style.display = 'none';
+}
+
+// ========================================
+// Data Fetching Functions
+// ========================================
+
+async function getAuthHeaders() {
+    if (!idToken) {
+        // Refresh token if needed
+        if (currentUser) {
+            idToken = await currentUser.getIdToken();
+        } else {
+            throw new Error('Not authenticated');
+        }
+    }
+    return {
+        'Authorization': `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+    };
+}
+
+async function fetchUserDevices() {
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${CONFIG.apiBaseUrl}/devices`, {
+            headers: headers
+        });
+        
+        if (response.status === 401) {
+            // Token expired, try to refresh
+            if (currentUser) {
+                idToken = await currentUser.getIdToken(true);
+                return fetchUserDevices(); // Retry
+            }
+            throw new Error('Authentication required');
+        }
         
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
-        
-        if (data.success && data.readings.length > 0) {
-            // Update all display sections
-            updateCurrentReadings(data.readings[0]); // Most recent reading
-            updateChart(data.readings);
-            updateTable(data.readings);
-            updateStatus(`✓ Loaded ${data.count} readings`, 'success');
-            updateDataCount(data.count);
-            updateLastUpdated();
-        } else {
-            updateStatus('No data available for this device', 'warning');
-            clearDisplays();
-        }
+        return data.devices || [];
     } catch (error) {
-        console.error('Error fetching data:', error);
-        updateStatus(`Error: ${error.message}`, 'error');
-        clearDisplays();
+        console.error('Error fetching devices:', error);
+        throw error;
+    }
+}
+
+async function fetchUserData() {
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${CONFIG.apiBaseUrl}/user_data?limit=200`, {
+            headers: headers
+        });
+        
+        if (response.status === 401) {
+            if (currentUser) {
+                idToken = await currentUser.getIdToken(true);
+                return fetchUserData(); // Retry
+            }
+            throw new Error('Authentication required');
+        }
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error('Error fetching user data:', error);
+        throw error;
+    }
+}
+
+async function fetchUserAdvice() {
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${CONFIG.apiBaseUrl}/user_advice`, {
+            headers: headers
+        });
+        
+        if (response.status === 401) {
+            if (currentUser) {
+                idToken = await currentUser.getIdToken(true);
+                return fetchUserAdvice(); // Retry
+            }
+            throw new Error('Authentication required');
+        }
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        return data.advice || null;
+    } catch (error) {
+        console.error('Error fetching advice:', error);
+        throw error;
     }
 }
 
 // ========================================
-// Display Updates - Current Readings
+// Main Data Loading
 // ========================================
 
-function updateCurrentReadings(reading) {
-    // Update temperature
-    const temp = reading.temperature;
-    document.getElementById('current-temp').textContent = 
-        temp !== null && temp !== undefined ? temp.toFixed(1) : '--';
+async function loadUserData() {
+    updateStatus('Loading data...', 'loading');
     
-    // Update humidity
-    const humidity = reading.humidity;
-    document.getElementById('current-humidity').textContent = 
-        humidity !== null && humidity !== undefined ? humidity.toFixed(1) : '--';
+    try {
+        // Fetch devices and data in parallel
+        const [devices, data] = await Promise.all([
+            fetchUserDevices(),
+            fetchUserData()
+        ]);
+        
+        userDevices = devices.slice(0, CONFIG.maxDevices); // Limit to 4 devices
+        userData = data;
+        
+        // Update displays
+        updateDeviceCards();
+        updateUnifiedTable();
+        updateStatus(`✓ Loaded ${data.total_readings || 0} readings`, 'success');
+        updateDataCount(data.total_readings || 0);
+        updateLastUpdated();
+        
+    } catch (error) {
+        console.error('Error loading user data:', error);
+        updateStatus(`Error: ${error.message}`, 'error');
+        if (error.message.includes('Authentication')) {
+            // Redirect to login
+            signOut();
+        }
+    }
+}
+
+async function loadUserAdvice() {
+    const adviceBtn = document.getElementById('get-advice-btn');
+    const originalText = adviceBtn.textContent;
+    adviceBtn.disabled = true;
+    adviceBtn.textContent = 'Loading...';
     
-    // Update light
-    const light = reading.light;
-    document.getElementById('current-light').textContent = 
-        light !== null && light !== undefined ? Math.round(light) : '--';
-    
-    // Update soil moisture
-    const soil = reading.soil_moisture;
-    document.getElementById('current-soil').textContent = 
-        soil !== null && soil !== undefined ? soil.toFixed(1) : '--';
+    try {
+        const advice = await fetchUserAdvice();
+        userAdvice = advice;
+        updateAdviceDisplay();
+    } catch (error) {
+        console.error('Error loading advice:', error);
+        updateStatus(`Error loading advice: ${error.message}`, 'error');
+    } finally {
+        adviceBtn.disabled = false;
+        adviceBtn.textContent = originalText;
+    }
 }
 
 // ========================================
-// Display Updates - Chart
+// Display Updates - Device Cards
 // ========================================
 
-function initializeChart() {
-    const ctx = document.getElementById('sensor-chart').getContext('2d');
+function updateDeviceCards() {
+    const grid = document.getElementById('devices-grid');
+    grid.innerHTML = '';
     
-    chart = new Chart(ctx, {
+    if (userDevices.length === 0) {
+        grid.innerHTML = '<div class="no-devices-message">No devices registered. Register a device to start monitoring.</div>';
+        return;
+    }
+    
+    // Create cards for up to 4 devices
+    for (let i = 0; i < Math.min(userDevices.length, CONFIG.maxDevices); i++) {
+        const device = userDevices[i];
+        const deviceId = device.device_id;
+        
+        // Get readings for this device
+        const deviceReadings = (userData.readings || []).filter(r => r.device_id === deviceId);
+        const latestReading = deviceReadings[0] || null;
+        
+        // Create device card
+        const card = createDeviceCard(device, latestReading, deviceReadings);
+        grid.appendChild(card);
+        
+        // Initialize chart for this device
+        if (deviceReadings.length > 0) {
+            initializeDeviceChart(deviceId, deviceReadings);
+        }
+    }
+    
+    // Update device-specific advice
+    updateDeviceSpecificAdvice();
+}
+
+function createDeviceCard(device, latestReading, readings) {
+    const card = document.createElement('div');
+    card.className = 'device-card';
+    card.id = `device-card-${device.device_id}`;
+    
+    // Status indicator (online if last_seen is recent)
+    const lastSeen = device.last_seen ? new Date(device.last_seen) : null;
+    const isOnline = lastSeen && (Date.now() - lastSeen.getTime()) < 3600000; // 1 hour
+    const statusClass = isOnline ? 'status-online' : 'status-offline';
+    const statusText = isOnline ? '● Online' : '○ Offline';
+    
+    card.innerHTML = `
+        <div class="device-card-header">
+            <h3>${device.name || device.device_id}</h3>
+            <span class="device-status ${statusClass}">${statusText}</span>
+        </div>
+        <div class="device-readings">
+            <div class="device-reading">
+                <span class="reading-icon">🌡️</span>
+                <span class="reading-value">${latestReading?.temperature?.toFixed(1) || '--'}</span>
+                <span class="reading-unit">°C</span>
+            </div>
+            <div class="device-reading">
+                <span class="reading-icon">💧</span>
+                <span class="reading-value">${latestReading?.humidity?.toFixed(1) || '--'}</span>
+                <span class="reading-unit">%</span>
+            </div>
+            <div class="device-reading">
+                <span class="reading-icon">☀️</span>
+                <span class="reading-value">${latestReading?.light ? Math.round(latestReading.light) : '--'}</span>
+                <span class="reading-unit">lux</span>
+            </div>
+            <div class="device-reading">
+                <span class="reading-icon">🌿</span>
+                <span class="reading-value">${latestReading?.soil_moisture?.toFixed(1) || '--'}</span>
+                <span class="reading-unit">%</span>
+            </div>
+        </div>
+        <div class="device-chart-container">
+            <canvas id="chart-${device.device_id}"></canvas>
+        </div>
+        <div id="device-advice-${device.device_id}" class="device-advice" style="display: none;"></div>
+    `;
+    
+    return card;
+}
+
+// ========================================
+// Chart Functions - Individual Device Charts
+// ========================================
+
+function initializeDeviceChart(deviceId, readings) {
+    const canvasId = `chart-${deviceId}`;
+    const canvas = document.getElementById(canvasId);
+    
+    if (!canvas) {
+        console.warn(`Canvas not found for device ${deviceId}`);
+        return;
+    }
+    
+    // Destroy existing chart if any
+    if (deviceCharts[deviceId]) {
+        deviceCharts[deviceId].destroy();
+    }
+    
+    // Sort readings by timestamp (oldest first)
+    const sortedReadings = [...readings].reverse().slice(-CONFIG.chartMaxPoints);
+    
+    const labels = sortedReadings.map(r => r.timestamp || r.server_timestamp);
+    
+    const ctx = canvas.getContext('2d');
+    deviceCharts[deviceId] = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: [],
+            labels: labels,
             datasets: [
                 {
                     label: 'Temperature (°C)',
-                    data: [],
-                    borderColor: '#FF6384',
-                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                    data: sortedReadings.map(r => r.temperature),
+                    borderColor: '#4CAF50', // Green
+                    backgroundColor: 'rgba(76, 175, 80, 0.1)',
                     yAxisID: 'y',
+                    tension: 0.4,
                 },
                 {
                     label: 'Humidity (%)',
-                    data: [],
-                    borderColor: '#36A2EB',
-                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                    data: sortedReadings.map(r => r.humidity),
+                    borderColor: '#42A5F5', // Blue
+                    backgroundColor: 'rgba(66, 165, 245, 0.1)',
                     yAxisID: 'y',
+                    tension: 0.4,
                 },
                 {
                     label: 'Soil Moisture (%)',
-                    data: [],
-                    borderColor: '#4BC0C0',
-                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    data: sortedReadings.map(r => r.soil_moisture),
+                    borderColor: '#66BB6A', // Light green
+                    backgroundColor: 'rgba(102, 187, 106, 0.1)',
                     yAxisID: 'y',
+                    tension: 0.4,
                 },
                 {
                     label: 'Light (lux)',
-                    data: [],
-                    borderColor: '#FFCE56',
-                    backgroundColor: 'rgba(255, 206, 86, 0.1)',
+                    data: sortedReadings.map(r => r.light),
+                    borderColor: '#FFC107', // Yellow
+                    backgroundColor: 'rgba(255, 193, 7, 0.1)',
                     yAxisID: 'y1',
+                    tension: 0.4,
                 }
             ]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
             plugins: {
                 legend: {
-                    position: 'top',
-                },
-                tooltip: {
-                    callbacks: {
-                        title: (context) => {
-                            return formatTimestamp(context[0].label);
+                    position: 'bottom',
+                    labels: {
+                        boxWidth: 12,
+                        font: {
+                            size: 11
                         }
                     }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
                 }
             },
             scales: {
                 x: {
                     display: true,
-                    title: {
-                        display: true,
-                        text: 'Time'
-                    },
                     ticks: {
-                        callback: function(value, index, values) {
-                            // Show abbreviated timestamps
-                            const label = this.getLabelForValue(value);
-                            return formatTimestampShort(label);
+                        maxTicksLimit: 6,
+                        font: {
+                            size: 10
                         }
                     }
                 },
@@ -212,62 +463,113 @@ function initializeChart() {
                     type: 'linear',
                     display: true,
                     position: 'left',
-                    title: {
-                        display: true,
-                        text: 'Temperature / Humidity / Soil (%)'
-                    },
+                    ticks: {
+                        font: {
+                            size: 10
+                        }
+                    }
                 },
                 y1: {
                     type: 'linear',
                     display: true,
                     position: 'right',
-                    title: {
-                        display: true,
-                        text: 'Light (lux)'
-                    },
                     grid: {
                         drawOnChartArea: false,
                     },
+                    ticks: {
+                        font: {
+                            size: 10
+                        }
+                    }
                 }
             }
         }
     });
 }
 
-function updateChart(readings) {
-    // Sort readings by timestamp (oldest first for chart)
-    const sortedReadings = [...readings].reverse();
+// ========================================
+// Display Updates - Advice
+// ========================================
+
+function updateAdviceDisplay() {
+    if (!userAdvice) {
+        document.getElementById('advice-section').style.display = 'none';
+        return;
+    }
     
-    // Limit to max points for performance
-    const limitedReadings = sortedReadings.slice(-CONFIG.chartMaxPoints);
+    document.getElementById('advice-section').style.display = 'block';
     
-    // Extract data
-    const labels = limitedReadings.map(r => r.timestamp || r.server_timestamp);
-    const temperatures = limitedReadings.map(r => r.temperature);
-    const humidities = limitedReadings.map(r => r.humidity);
-    const soilMoistures = limitedReadings.map(r => r.soil_moisture);
-    const lights = limitedReadings.map(r => r.light);
+    // Update general advice
+    const generalAdviceEl = document.getElementById('general-advice');
+    if (userAdvice.overall_advice) {
+        generalAdviceEl.innerHTML = `<p>${userAdvice.overall_advice}</p>`;
+    } else {
+        generalAdviceEl.innerHTML = '<p>No general advice available.</p>';
+    }
     
-    // Update chart
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = temperatures;
-    chart.data.datasets[1].data = humidities;
-    chart.data.datasets[2].data = soilMoistures;
-    chart.data.datasets[3].data = lights;
-    chart.update();
+    // Update insights
+    const insightsEl = document.getElementById('insights-list');
+    if (userAdvice.insights && userAdvice.insights.length > 0) {
+        insightsEl.innerHTML = '<h3>Insights:</h3><ul>' + 
+            userAdvice.insights.map(insight => `<li>${insight}</li>`).join('') + 
+            '</ul>';
+    } else {
+        insightsEl.innerHTML = '';
+    }
+    
+    // Update device-specific advice (will be called separately)
+    updateDeviceSpecificAdvice();
+}
+
+function updateDeviceSpecificAdvice() {
+    if (!userAdvice || !userAdvice.device_advice) {
+        return;
+    }
+    
+    userAdvice.device_advice.forEach(deviceAdvice => {
+        const adviceEl = document.getElementById(`device-advice-${deviceAdvice.device_id}`);
+        if (adviceEl) {
+            const priorityClass = `priority-${deviceAdvice.priority || 'low'}`;
+            adviceEl.className = `device-advice ${priorityClass}`;
+            adviceEl.style.display = 'block';
+            
+            let html = `<div class="device-advice-content">`;
+            html += `<p class="device-advice-text">${deviceAdvice.advice || 'No specific advice for this device.'}</p>`;
+            
+            if (deviceAdvice.recommendations && deviceAdvice.recommendations.length > 0) {
+                html += `<ul class="device-recommendations">`;
+                deviceAdvice.recommendations.forEach(rec => {
+                    html += `<li>${rec}</li>`;
+                });
+                html += `</ul>`;
+            }
+            html += `</div>`;
+            
+            adviceEl.innerHTML = html;
+        }
+    });
 }
 
 // ========================================
-// Display Updates - Table
+// Display Updates - Unified Table
 // ========================================
 
-function updateTable(readings) {
+function updateUnifiedTable() {
     const tbody = document.getElementById('table-body');
     tbody.innerHTML = '';
+    
+    if (!userData || !userData.readings || userData.readings.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="no-data">No data available. Click "Refresh Data" to load.</td></tr>';
+        return;
+    }
+    
+    // Show up to 50 most recent readings
+    const readings = userData.readings.slice(0, 50);
     
     readings.forEach(reading => {
         const row = document.createElement('tr');
         
+        const deviceName = reading.device_name || reading.device_id || 'Unknown';
         const timestamp = reading.timestamp || reading.server_timestamp;
         const temp = reading.temperature;
         const humidity = reading.humidity;
@@ -275,6 +577,7 @@ function updateTable(readings) {
         const soil = reading.soil_moisture;
         
         row.innerHTML = `
+            <td>${deviceName}</td>
             <td>${formatTimestamp(timestamp)}</td>
             <td>${temp !== null && temp !== undefined ? temp.toFixed(1) : '--'}</td>
             <td>${humidity !== null && humidity !== undefined ? humidity.toFixed(1) : '--'}</td>
@@ -300,24 +603,11 @@ function formatTimestamp(timestamp) {
     }
 }
 
-function formatTimestampShort(timestamp) {
-    if (!timestamp) return '--';
-    try {
-        const date = new Date(timestamp);
-        return date.toLocaleTimeString();
-    } catch (e) {
-        return timestamp;
-    }
-}
-
 function updateStatus(message, type = 'info') {
     const statusEl = document.getElementById('status-message');
     statusEl.textContent = message;
     
-    // Remove previous type classes
     statusEl.classList.remove('loading', 'success', 'error', 'warning');
-    
-    // Add new type class
     if (type) {
         statusEl.classList.add(type);
     }
@@ -329,28 +619,23 @@ function updateDataCount(count) {
 
 function updateLastUpdated() {
     const now = new Date().toLocaleTimeString();
-    document.getElementById('last-updated').textContent = `Last updated: ${now}`;
+    // Removed last-updated element, but keeping function for compatibility
 }
 
-function clearDisplays() {
-    // Clear current readings
-    document.getElementById('current-temp').textContent = '--';
-    document.getElementById('current-humidity').textContent = '--';
-    document.getElementById('current-light').textContent = '--';
-    document.getElementById('current-soil').textContent = '--';
+function clearAllDisplays() {
+    // Clear device grid
+    document.getElementById('devices-grid').innerHTML = '';
     
-    // Clear chart
-    if (chart) {
-        chart.data.labels = [];
-        chart.data.datasets.forEach(dataset => {
-            dataset.data = [];
-        });
-        chart.update();
-    }
+    // Clear charts
+    Object.values(deviceCharts).forEach(chart => chart.destroy());
+    deviceCharts = {};
     
     // Clear table
     const tbody = document.getElementById('table-body');
-    tbody.innerHTML = '<tr><td colspan="5" class="no-data">No data available</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="no-data">No data available</td></tr>';
+    
+    // Clear advice
+    document.getElementById('advice-section').style.display = 'none';
 }
 
 // ========================================
@@ -358,10 +643,10 @@ function clearDisplays() {
 // ========================================
 
 function startAutoRefresh() {
-    stopAutoRefresh(); // Clear any existing timer
+    stopAutoRefresh();
     autoRefreshTimer = setInterval(() => {
         console.log('Auto-refreshing data...');
-        fetchAndDisplayData();
+        loadUserData();
     }, CONFIG.autoRefreshInterval);
     console.log(`Auto-refresh enabled (every ${CONFIG.autoRefreshInterval / 1000}s)`);
 }
@@ -375,21 +660,61 @@ function stopAutoRefresh() {
 }
 
 // ========================================
-// Export functions for easy extension
-// (You can call these from browser console)
+// Event Listeners Setup
+// ========================================
+
+function setupEventListeners() {
+    // Google sign-in button
+    document.getElementById('google-signin-btn').addEventListener('click', signInWithGoogle);
+    
+    // Logout button
+    document.getElementById('logout-btn').addEventListener('click', signOut);
+    
+    // Get advice button
+    document.getElementById('get-advice-btn').addEventListener('click', loadUserAdvice);
+    
+    // Refresh data button
+    document.getElementById('refresh-btn').addEventListener('click', loadUserData);
+    
+    // Auto-refresh toggle
+    document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
+        if (e.target.checked) {
+            startAutoRefresh();
+        } else {
+            stopAutoRefresh();
+        }
+    });
+}
+
+// ========================================
+// Initialization
+// ========================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('🌱 GrowSense Dashboard initializing...');
+    
+    // Set up event listeners
+    setupEventListeners();
+    
+    // Initialize Firebase
+    initializeFirebase();
+    
+    // Check if user is already logged in (handled by onAuthStateChanged)
+});
+
+// ========================================
+// Export for debugging
 // ========================================
 
 window.GrowSense = {
-    fetchData: fetchAndDisplayData,
-    updateChart: updateChart,
+    loadUserData,
+    loadUserAdvice,
+    signOut,
     config: CONFIG,
-    getCurrentDeviceId: () => currentDeviceId,
-    setDeviceId: (id) => {
-        currentDeviceId = id;
-        document.getElementById('device-select').value = id;
-        fetchAndDisplayData();
-    }
+    getCurrentUser: () => currentUser,
+    getUserDevices: () => userDevices,
+    getUserData: () => userData,
+    getUserAdvice: () => userAdvice
 };
 
 console.log('💡 Tip: Use window.GrowSense to access dashboard functions from console');
-

@@ -7,107 +7,82 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <!-- Chart.js for data visualization -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 </head>
 <body>
-    <div class="dashboard">
+    <!-- Login Modal -->
+    <div id="login-modal" class="login-modal">
+        <div class="login-modal-content">
+            <h2>🌱 Welcome to GrowSense</h2>
+            <p>Sign in to view your plant sensors</p>
+            <button id="google-signin-btn" class="btn-google">
+                <svg width="18" height="18" viewBox="0 0 18 18">
+                    <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
+                    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.965-2.184l-2.908-2.258c-.806.54-1.837.86-3.057.86-2.35 0-4.34-1.587-5.053-3.72H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+                    <path fill="#FBBC05" d="M3.947 10.702c-.18-.54-.282-1.117-.282-1.702s.102-1.162.282-1.702V4.966H.957C.348 6.175 0 7.55 0 9s.348 2.825.957 4.034l3.99-3.332z"/>
+                    <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.966L3.947 7.298C4.66 5.163 6.65 3.58 9 3.58z"/>
+                </svg>
+                Sign in with Google
+            </button>
+            <div id="login-error" class="login-error" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Dashboard (hidden until authenticated) -->
+    <div id="dashboard" class="dashboard" style="display: none;">
         <!-- Header Section -->
         <header class="header">
             <div class="header-content">
-                <h1>🌱 GrowSense Dashboard</h1>
-                <p class="subtitle">Monitor your plant sensors in real-time</p>
+                <div>
+                    <h1>🌱 GrowSense Dashboard</h1>
+                    <p class="subtitle">Monitor your plant sensors in real-time</p>
+                </div>
+                <div class="header-actions">
+                    <span id="user-email" class="user-email"></span>
+                    <button id="logout-btn" class="btn-secondary">Logout</button>
+                </div>
             </div>
         </header>
 
+        <!-- General Advice Section (at top) -->
+        <section id="advice-section" class="advice-section" style="display: none;">
+            <div class="advice-header">
+                <h2>💡 Plant Care Advice</h2>
+                <button id="get-advice-btn" class="btn-primary">Get Advice</button>
+            </div>
+            <div id="general-advice" class="general-advice"></div>
+            <div id="insights-list" class="insights-list"></div>
+        </section>
+
+        <!-- Device Cards Grid (2x2) -->
+        <section class="devices-grid-section">
+            <h2>Your Devices</h2>
+            <div id="devices-grid" class="devices-grid">
+                <!-- Device cards will be inserted here -->
+            </div>
+        </section>
+
         <!-- Controls Section -->
         <section class="controls">
-            <div class="control-group">
-                <label for="device-select">Select Device:</label>
-                <select id="device-select">
-                    <option value="test_device">Test Device</option>
-                    <option value="esp32_device_001">ESP32 Device 001</option>
-                    <option value="esp32_greenhouse_01">ESP32 Greenhouse 01</option>
-                    <!-- Add more devices here -->
-                </select>
-            </div>
-            
-            <div class="control-group">
-                <label for="limit-select">Show Last:</label>
-                <select id="limit-select">
-                    <option value="10">10 readings</option>
-                    <option value="50" selected>50 readings</option>
-                    <option value="100">100 readings</option>
-                    <option value="500">500 readings</option>
-                </select>
-            </div>
-
             <button id="refresh-btn" class="btn-primary">🔄 Refresh Data</button>
-            
             <div class="auto-refresh">
                 <label>
                     <input type="checkbox" id="auto-refresh-toggle" checked>
-                    Auto-refresh (30s)
+                    Auto-refresh (60s)
                 </label>
             </div>
         </section>
 
-        <!-- Current Readings Section - Shows latest sensor values -->
-        <section class="current-readings">
-            <h2>Latest Readings</h2>
-            <div class="readings-grid">
-                <div class="reading-card">
-                    <div class="reading-icon">🌡️</div>
-                    <div class="reading-content">
-                        <div class="reading-label">Temperature</div>
-                        <div class="reading-value" id="current-temp">--</div>
-                        <div class="reading-unit">°C</div>
-                    </div>
-                </div>
-
-                <div class="reading-card">
-                    <div class="reading-icon">💧</div>
-                    <div class="reading-content">
-                        <div class="reading-label">Humidity</div>
-                        <div class="reading-value" id="current-humidity">--</div>
-                        <div class="reading-unit">%</div>
-                    </div>
-                </div>
-
-                <div class="reading-card">
-                    <div class="reading-icon">☀️</div>
-                    <div class="reading-content">
-                        <div class="reading-label">Light</div>
-                        <div class="reading-value" id="current-light">--</div>
-                        <div class="reading-unit">lux</div>
-                    </div>
-                </div>
-
-                <div class="reading-card">
-                    <div class="reading-icon">🌿</div>
-                    <div class="reading-content">
-                        <div class="reading-label">Soil Moisture</div>
-                        <div class="reading-value" id="current-soil">--</div>
-                        <div class="reading-unit">%</div>
-                    </div>
-                </div>
-            </div>
-            <div class="last-updated" id="last-updated">Last updated: Never</div>
-        </section>
-
-        <!-- Chart Section - Visualize trends over time -->
-        <section class="chart-section">
-            <h2>Sensor Trends</h2>
-            <div class="chart-container">
-                <canvas id="sensor-chart"></canvas>
-            </div>
-        </section>
-
-        <!-- Data Table Section - Detailed readings table -->
+        <!-- Unified Data Table Section -->
         <section class="data-table-section">
-            <h2>Recent Data</h2>
+            <h2>Recent Data (All Devices)</h2>
             <div class="table-container">
                 <table id="data-table">
                     <thead>
                         <tr>
+                            <th>Device</th>
                             <th>Timestamp</th>
                             <th>Temperature (°C)</th>
                             <th>Humidity (%)</th>
@@ -117,7 +92,7 @@
                     </thead>
                     <tbody id="table-body">
                         <tr>
-                            <td colspan="5" class="no-data">No data available. Click "Refresh Data" to load.</td>
+                            <td colspan="6" class="no-data">No data available. Click "Refresh Data" to load.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -132,7 +107,10 @@
     </div>
 
     <!-- JavaScript -->
+    <script>
+        // Firebase config from backend
+        const FIREBASE_CONFIG = {{ firebase_config | tojson }};
+    </script>
     <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>
-
