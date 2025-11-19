@@ -272,7 +272,11 @@ def upload_data():
 @bp.route('/get_data', methods=['GET'])
 def get_data():
     """
-    Retrieve sensor readings for a specific device.
+    [DEPRECATED] Retrieve sensor readings for a specific device.
+    
+    This endpoint is deprecated. Use /user_data or /user_data/<device_id> instead.
+    This endpoint reads from the old /devices/ location and may not return data
+    for devices registered to users.
     
     Query parameters:
         device_id: Device identifier (required)

@@ -1,6 +1,15 @@
-# GrowSense MVP
+# GrowSense
 
-A minimal Flask web application that accepts sensor data from ESP32 modules and stores it in Firebase Cloud Firestore, with a simple dashboard for viewing data.
+A Flask web application for monitoring plant sensors from ESP32 modules. Features Firebase Authentication, user-centric device management, and AI-powered plant care advice.
+
+## Features
+
+- 🔐 **Firebase Authentication** - Secure Google sign-in for users
+- 📱 **Multi-Device Dashboard** - Monitor up to 4 devices per user with individual charts
+- 📊 **Real-time Data Visualization** - Charts and tables for temperature, humidity, light, and soil moisture
+- 🤖 **AI Plant Care Advice** - Get personalized recommendations from Gemini AI
+- ☁️ **Firebase Cloud Firestore** - Scalable cloud database
+- 🚀 **Render Deployment** - Easy deployment to Render free tier
 
 ## Project Structure
 
@@ -8,15 +17,17 @@ A minimal Flask web application that accepts sensor data from ESP32 modules and 
 GrowSense/
 ├── app/
 │   ├── __init__.py          # Flask app factory
-│   ├── routes.py            # API endpoints (to be added)
-│   ├── firebase_client.py   # Firebase initialization (to be added)
-│   ├── templates/           # HTML templates
-│   │   └── index.html       # Dashboard (to be added)
-│   └── static/              # Static assets
-│       └── main.js          # Frontend JS (to be added)
+│   ├── routes.py            # API endpoints
+│   ├── firebase_client.py   # Firebase initialization & helpers
+│   ├── gemini_client.py     # Gemini AI integration (placeholder)
+│   ├── templates/
+│   │   └── index.html       # Dashboard UI
+│   └── static/
+│       ├── main.js          # Frontend JavaScript
+│       └── style.css        # Dashboard styles
+├── firmware/                # ESP32 firmware code
+├── scripts/                 # Utility scripts
 ├── requirements.txt         # Python dependencies
-├── .gitignore              # Git ignore patterns
-├── .env                    # Environment variables (NOT committed)
 └── README.md               # This file
 ```
 
@@ -24,17 +35,20 @@ GrowSense/
 
 - **Backend**: Flask (Python 3.10+)
 - **Database**: Firebase Cloud Firestore
-- **Storage**: Firebase Storage (optional)
+- **Authentication**: Firebase Authentication (Google Sign-In)
+- **AI**: Google Gemini (for plant care advice)
 - **Hosting**: Render (free tier)
-- **Authentication**: Simple API key validation (MVP)
 
-## Setup Instructions
+## Quick Start
 
-(To be added in subsequent steps)
+### Prerequisites
 
-## Running Locally
+- Python 3.10+
+- Firebase project with Firestore and Authentication enabled
+- Firebase service account JSON file
+- Firebase web app configuration
 
-### Quick Start
+### Setup
 
 1. **Clone the repository**
 ```bash
@@ -50,39 +64,73 @@ pip install -r requirements.txt
 ```
 
 3. **Configure environment variables**
-```bash
-# Create .env file (see .env.example)
-cp .env.example .env
 
-# Edit .env and add your Firebase credentials
-# FIREBASE_SERVICE_ACCOUNT_PATH=./serviceAccountKey.json
+Create a `.env` file:
+```bash
+# Firebase Configuration
+FIREBASE_SERVICE_ACCOUNT_PATH=./serviceAccountKey.json
+FIREBASE_WEB_CONFIG={"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}
+
+# Flask Configuration
+FLASK_ENV=development
+PORT=5001
 ```
 
-4. **Run the server**
+**Getting Firebase Web Config:**
+- Go to [Firebase Console](https://console.firebase.google.com/)
+- Project Settings → Your apps → Web app
+- Copy the `firebaseConfig` object
+- See `FIREBASE_WEB_CONFIG_SETUP.md` for detailed instructions
+
+4. **Enable Google Sign-In**
+- Firebase Console → Authentication → Sign-in method
+- Enable Google provider
+- See `ENABLE_GOOGLE_AUTH.md` for details
+
+5. **Run the server**
 ```bash
-PORT=5001 python3 run.py
-# Or simply: python3 run.py (defaults to port 5000)
+source venv/bin/activate
+python run.py
 ```
 
-5. **Open dashboard**
+6. **Open dashboard**
 ```
 http://localhost:5001
 ```
 
-### Testing the API
+## Usage
 
-Run the test script:
+### Registering Devices
+
+1. Sign in to the dashboard with Google
+2. Register devices via API:
 ```bash
-./test_api.sh
+curl -X POST http://localhost:5001/devices/register \
+  -H "Authorization: Bearer <FIREBASE_ID_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": "esp32_device_001",
+    "api_key": "your-secret-key",
+    "name": "Living Room Sensor"
+  }'
 ```
 
-Or manually test with curl:
+3. Add device to `device_keys.json`:
+```json
+{
+  "esp32_device_001": { "api_key": "your-secret-key" }
+}
+```
+
+### Uploading Sensor Data
+
+ESP32 devices can upload data via:
 ```bash
 curl -X POST http://localhost:5001/upload_data \
   -H "Content-Type: application/json" \
   -d '{
-    "device_id": "test_device",
-    "api_key": "test-key-12345",
+    "device_id": "esp32_device_001",
+    "api_key": "your-secret-key",
     "temperature": 23.5,
     "humidity": 65.2,
     "light": 450,
@@ -90,25 +138,56 @@ curl -X POST http://localhost:5001/upload_data \
   }'
 ```
 
+### Getting AI Advice
+
+Click the "Get Advice" button in the dashboard to receive personalized plant care recommendations based on your sensor data.
+
+## API Endpoints
+
+### Authentication
+- `POST /auth/login` - Verify Firebase ID token
+- `GET /auth/me` - Get current user info (requires auth)
+- `POST /auth/logout` - Logout (requires auth)
+
+### Device Management
+- `POST /devices/register` - Register device to user (requires auth)
+- `GET /devices` - List user's devices (requires auth)
+- `GET /devices/<device_id>` - Get device info (requires auth)
+- `DELETE /devices/<device_id>` - Remove device (requires auth)
+
+### Data
+- `POST /upload_data` - Upload sensor reading (device API key auth)
+- `GET /user_data` - Get all user's readings (requires auth)
+- `GET /user_data/<device_id>` - Get device-specific readings (requires auth)
+- `GET /user_advice` - Get AI plant care advice (requires auth)
+
+### Health
+- `GET /health` - Health check endpoint
+
+## Testing
+
+See test scripts:
+- `test_auth.sh` - Test authentication endpoints
+- `test_devices.sh` - Test device management
+- `test_api.sh` - Test data upload
+
 ## Deployment
 
-### Deploy to Render (Free Tier)
-
-See **[DEPLOYMENT.md](DEPLOYMENT.md)** for complete deployment guide.
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for complete deployment guide to Render.
 
 **Quick steps:**
-1. Run `./prepare_for_render.sh` to get Firebase credentials in correct format
-2. Create new Web Service on Render.com
-3. Connect your GitHub repository
-4. Set environment variables (see DEPLOYMENT.md)
-5. Deploy!
+1. Push code to GitHub
+2. Create Web Service on Render.com
+3. Set environment variables (including `FIREBASE_WEB_CONFIG`)
+4. Deploy!
 
-Your app will be live at: `https://your-app-name.onrender.com`
+## Documentation
 
-### Keep App Warm (Free Tier)
-
-Free tier spins down after 15 minutes. Use [UptimeRobot](https://uptimerobot.com) to ping `/health` every 5 minutes.
+- `DEPLOYMENT.md` - Render deployment guide
+- `FIREBASE_WEB_CONFIG_SETUP.md` - Firebase web config setup
+- `ENABLE_GOOGLE_AUTH.md` - Enable Google sign-in
+- `firmware/README.md` - ESP32 firmware setup
 
 ## License
 
-(See LICENSE file in repository)
+See LICENSE file in repository.

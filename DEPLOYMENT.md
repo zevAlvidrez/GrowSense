@@ -57,6 +57,7 @@ In the Render dashboard, scroll down to **Environment Variables** and add:
 | `FLASK_ENV` | `production` | Sets Flask to production mode |
 | `PYTHON_VERSION` | `3.10.13` | Python version |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | `{paste single-line JSON here}` | Your Firebase credentials (from Step 1) |
+| `FIREBASE_WEB_CONFIG` | `{"apiKey":"...","authDomain":"..."}` | Firebase web app config (see FIREBASE_WEB_CONFIG_SETUP.md) |
 | `DEVICE_KEYS_PATH` | `./device_keys.json` | Path to device API keys |
 
 ### Optional Variables
@@ -65,11 +66,27 @@ In the Render dashboard, scroll down to **Environment Variables** and add:
 |-----|-------|-------|
 | `FIREBASE_STORAGE_BUCKET` | `growsense-1cdec.appspot.com` | For image uploads (replace with your bucket) |
 
-**Important**: Mark `FIREBASE_SERVICE_ACCOUNT_JSON` as a **Secret** by clicking the lock icon.
+**Important**: 
+- Mark `FIREBASE_SERVICE_ACCOUNT_JSON` as a **Secret** by clicking the lock icon
+- Mark `FIREBASE_WEB_CONFIG` as a **Secret** as well (contains API keys)
+- Get `FIREBASE_WEB_CONFIG` from Firebase Console → Project Settings → Your apps → Web app
 
 ---
 
-## Step 4: Deploy
+## Step 4: Enable Google Sign-In in Firebase
+
+Before deploying, make sure Google Sign-In is enabled:
+
+1. Go to [Firebase Console](https://console.firebase.google.com/)
+2. Select your project
+3. Go to **Authentication** → **Sign-in method**
+4. Click on **Google**
+5. Enable it and set a support email
+6. Save
+
+See `ENABLE_GOOGLE_AUTH.md` for detailed instructions.
+
+## Step 5: Deploy
 
 1. Click **"Create Web Service"** at the bottom
 2. Render will automatically:
@@ -79,9 +96,14 @@ In the Render dashboard, scroll down to **Environment Variables** and add:
 
 This takes about 5-10 minutes for the first deploy.
 
+3. **After deployment**, visit your app URL and test:
+   - Google sign-in should work
+   - Dashboard should load
+   - Device registration should work
+
 ---
 
-## Step 5: Test Your Deployed App
+## Step 6: Test Your Deployed App
 
 Once deployed, Render will give you a URL like:
 ```
