@@ -16,7 +16,7 @@ from app.firebase_client import (
     remove_device_from_user,
     get_device_info,
     get_user_device_readings,
-    write_reading_dual,
+    write_reading,
     prepare_data_for_gemini
 )
 from app.gemini_client import get_gemini_advice
@@ -241,28 +241,27 @@ def upload_data():
         # Remove None values
         reading_doc = {k: v for k, v in reading_doc.items() if v is not None}
         
-        # Dual-write: Write to both old and new locations
-        # Old location: /devices/{device_id}/readings/{auto-id} (always)
-        # New location: /users/{user_id}/devices/{device_id}/readings/{auto-id} (if user_id available)
-        old_ref, new_ref = write_reading_dual(reading_doc, device_id, user_id)
+        # Write to user-centric location
+        if not user_id:
+            return jsonify({"error": "Device not registered to a user. Please register device first."}), 400
         
-        # Update device's last_seen timestamp if device is registered to a user
-        if user_id and new_ref:
-            try:
-                db = get_firestore()
-                user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
-                user_device_ref.update({'last_seen': SERVER_TIMESTAMP})
-            except Exception as e:
-                # Non-critical: last_seen update failure shouldn't fail the upload
-                print(f"Warning: Failed to update last_seen for device {device_id}: {str(e)}")
+        reading_ref = write_reading(reading_doc, device_id, user_id)
+        
+        # Update device's last_seen timestamp
+        try:
+            db = get_firestore()
+            user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
+            user_device_ref.update({'last_seen': SERVER_TIMESTAMP})
+        except Exception as e:
+            # Non-critical: last_seen update failure shouldn't fail the upload
+            print(f"Warning: Failed to update last_seen for device {device_id}: {str(e)}")
         
         return jsonify({
             "success": True,
             "message": "Data uploaded successfully",
             "device_id": device_id,
-            "reading_id": old_ref.id,
-            "timestamp": timestamp,
-            "dual_write": new_ref is not None  # Indicate if dual-write occurred
+            "reading_id": reading_ref.id,
+            "timestamp": timestamp
         }), 201
         
     except Exception as e:

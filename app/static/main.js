@@ -492,12 +492,15 @@ function initializeDeviceChart(deviceId, readings) {
 // ========================================
 
 function updateAdviceDisplay() {
+    // Always show the advice section (button is always visible)
+    document.getElementById('advice-section').style.display = 'block';
+    
     if (!userAdvice) {
-        document.getElementById('advice-section').style.display = 'none';
+        // Clear advice content if no advice yet
+        document.getElementById('general-advice').innerHTML = '<p>Click "Get Advice" to receive plant care recommendations based on your sensor data.</p>';
+        document.getElementById('insights-list').innerHTML = '';
         return;
     }
-    
-    document.getElementById('advice-section').style.display = 'block';
     
     // Update general advice
     const generalAdviceEl = document.getElementById('general-advice');
