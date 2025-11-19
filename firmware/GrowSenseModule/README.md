@@ -68,14 +68,36 @@ Then edit `secrets.h` with your credentials:
 
 #### Register Device on Server:
 
-Add your device to `/device_keys.json` on the server:
+**Step 1:** Add your device to `/device_keys.json` on the server:
 
 ```json
 {
-  "esp32_greenhouse_01": "your-secure-random-api-key",
-  "test_device": "test-key-12345"
+  "esp32_greenhouse_01": { "api_key": "your-secure-random-api-key" },
+  "test_device": { "api_key": "test-key-12345" }
 }
 ```
+
+**Step 2:** Register the device to your user account:
+
+After signing in to the dashboard, register the device via API:
+
+```bash
+curl -X POST https://your-app-name.onrender.com/devices/register \
+  -H "Authorization: Bearer YOUR_FIREBASE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": "esp32_greenhouse_01",
+    "api_key": "your-secure-random-api-key",
+    "name": "Greenhouse Sensor"
+  }'
+```
+
+**Get Firebase Token:** Open browser console (F12) and run:
+```javascript
+firebase.auth().currentUser.getIdToken().then(console.log)
+```
+
+**Note:** Devices must be registered to a user account before they can upload data. See `MODULE_SETUP_GUIDE.md` for complete setup instructions.
 
 ### 4. Upload to ESP32
 
