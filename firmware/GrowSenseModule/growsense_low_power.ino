@@ -29,8 +29,11 @@
 #include <ArduinoJson.h>
 #include "secrets.h"
 #include <Adafruit_AM2320.h>
+#include <BH1750.h>
+#include <Wire.h>
 
 Adafruit_AM2320 am2320;
+BH1750 lightMeter;
 
 // ============================================
 // Configuration
@@ -39,7 +42,7 @@ Adafruit_AM2320 am2320;
 // Server configuration
 const char* SERVER_URL = "https://growsense-wer0.onrender.com/upload_data";
 
-const int SOLAR_PIN = 1;  // Analog input pin
+
 
 // Device credentials (defined in secrets.h)
 // WIFI_SSID, WIFI_PASSWORD, DEVICE_ID, API_KEY
@@ -393,6 +396,7 @@ void initializeSensors() {
   if (ENABLE_SERIAL_DEBUG) {
     Serial.println("Initializing sensors...");
     // Try to initialize sensor
+    Wire.begin(1, 2);
     if (am2320.begin()) {
       Serial.println("✓ AM2320 found!");
     } else {
@@ -402,6 +406,20 @@ void initializeSensors() {
       Serial.println("  GND -> GND");
       Serial.println("  SDA -> GPIO 8 (or 21)");
       Serial.println("  SCL -> GPIO 9 (or 22)");
+    }
+
+    //Initialize BH1750
+    Wire1.begin(10, 11);
+    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)){
+      Serial.prinln("✓  BH1750 found!"):
+    } else {
+      Serial.println("✗ BH1750 NOT found!");
+      Serial.println("Check wiring:");
+      Serial.println("  VCC -> 3.3V (or 5V)");
+      Serial.println("  GND -> GND");
+      Serial.println("  SDA -> GPIO 8");
+      Serial.println("  SCL -> GPIO 9");
+      Serial.println("  ADDR -> GND (for default 0x23 address)");
     }
   }
 }
@@ -465,21 +483,17 @@ int readLight() {
    * int lux = lightMeter.readLightLevel();
    * return lux;
    */
-  int rawValue = analogRead(SOLAR_PIN);
-  float light_voltage = rawValue * (2.5 / 4095.0);
-  float lux = light_voltage * 1000.0;
+  float lux = lightMeter.readLightLevel();
     
   if (ENABLE_SERIAL_DEBUG) {
     Serial.print("Light: ");
-    Serial.print(rawValue);
-    Serial.print(" raw (");
-    Serial.print(light_voltage, 2);
-    Serial.println(" V)");
+    Serial.print(lux);
+    Serial.println(" lux");
   }
   
-  return lux;
+  return (int)lux;
 }
-const int SOIL_MOISTURE_PIN = 32 //Change accordingly to actualy pin
+const int SOIL_MOISTURE_PIN = 32; //Change accordingly to actualy pin
 const int DRY_VALUE = 0; //will need to get an actual reading in dry air
 const int WET_VALUE = 0; //will need to get an actual reading in water
 
@@ -519,17 +533,17 @@ float readSoilMoisture() {
   }
   return moisturePercent;
 }
-
+const int UV_PIN = 41;
 float readUVlight(){
   int rawValue = analogRead(UV_PIN);
   float voltage = rawValue * (3.3 / 4095.0);  // For 3.3V reference
-  float uvIndex = voltage / 0.1;
+  float UVlight = voltage / 0.1;
   
   if (ENABLE_SERIAL_DEBUG) {
     Serial.print("UV: ");
     Serial.print(voltage, 2);
     Serial.print(" V (UV Index: ");
-    Serial.print(uvIndex, 1);
+    Serial.print(UVlight, 1);
     Serial.println(")");
   }
   return UVlight;
