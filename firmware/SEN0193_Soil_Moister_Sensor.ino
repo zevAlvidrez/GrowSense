@@ -3,6 +3,14 @@
  * Reads analog sensor value and prints moisture level to Serial Monitor
  * 
  * Based on DFRobot SEN0193 example code
+ * "This example reads Capacitive Soil Moisture Sensor.
+ * Created 2015-10-21
+ * By berinie Chen <bernie.chen@dfrobot.com>
+
+ * GNU Lesser General Public License.
+ * See <http://www.gnu.org/licenses/> for details.
+ * All above must be included in any redistribution"
+ 
  * Adapted for ESP32-S3 with analog input on GPIO 40
  */
 
