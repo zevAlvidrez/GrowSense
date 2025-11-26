@@ -58,6 +58,7 @@ In the Render dashboard, scroll down to **Environment Variables** and add:
 | `PYTHON_VERSION` | `3.10.13` | Python version |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | `{paste single-line JSON here}` | Your Firebase credentials (from Step 1) |
 | `FIREBASE_WEB_CONFIG` | `{"apiKey":"...","authDomain":"..."}` | Firebase web app config (see FIREBASE_WEB_CONFIG_SETUP.md) |
+| `GOOGLE_API_KEY` | `AIzaSy...` | Google Gemini API key for AI advice feature |
 | `DEVICE_KEYS_PATH` | `./device_keys.json` | Path to device API keys |
 
 ### Optional Variables
@@ -69,7 +70,9 @@ In the Render dashboard, scroll down to **Environment Variables** and add:
 **Important**: 
 - Mark `FIREBASE_SERVICE_ACCOUNT_JSON` as a **Secret** by clicking the lock icon
 - Mark `FIREBASE_WEB_CONFIG` as a **Secret** as well (contains API keys)
+- Mark `GOOGLE_API_KEY` as a **Secret** as well (contains API key)
 - Get `FIREBASE_WEB_CONFIG` from Firebase Console → Project Settings → Your apps → Web app
+- Get `GOOGLE_API_KEY` from Google AI Studio: https://aistudio.google.com/apikey
 
 ---
 
