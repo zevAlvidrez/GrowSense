@@ -66,12 +66,16 @@
 
         <!-- Controls Section -->
         <section class="controls">
-            <button id="refresh-btn" class="btn-primary">🔄 Refresh Data</button>
+            <button id="refresh-btn" class="btn-primary">Refresh Data</button>
             <div class="auto-refresh">
-                <label>
-                    <input type="checkbox" id="auto-refresh-toggle" checked>
-                    Auto-refresh (60s)
-                </label>
+                <label for="auto-refresh-interval">Auto-refresh:</label>
+                <select id="auto-refresh-interval" class="refresh-interval-select">
+                    <option value="0">Off</option>
+                    <option value="30000">30s</option>
+                    <option value="60000" selected>60s</option>
+                    <option value="300000">5mins</option>
+                    <option value="600000">10mins</option>
+                </select>
             </div>
         </section>
 

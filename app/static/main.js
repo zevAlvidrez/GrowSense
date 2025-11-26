@@ -16,6 +16,7 @@ let firebaseAuth = null;
 let currentUser = null;
 let idToken = null;
 let deviceCharts = {}; // Object to store charts: {deviceId: chart}
+let deviceTimeRanges = {}; // Object to store selected time range per device: {deviceId: milliseconds}
 let autoRefreshTimer = null;
 let userDevices = [];
 let userData = null;
@@ -72,6 +73,13 @@ async function handleAuthSuccess(user) {
         
         // Load user data
         await loadUserData();
+        
+        // Start auto-refresh based on dropdown value
+        const refreshInterval = parseInt(document.getElementById('auto-refresh-interval').value);
+        if (refreshInterval > 0) {
+            CONFIG.autoRefreshInterval = refreshInterval;
+            startAutoRefresh();
+        }
     } catch (error) {
         console.error('Error getting ID token:', error);
         showLoginError('Failed to get authentication token.');
@@ -353,6 +361,11 @@ function createDeviceCard(device, latestReading, readings) {
     const statusClass = isOnline ? 'status-online' : 'status-offline';
     const statusText = isOnline ? '● Online' : '○ Offline';
     
+    // Initialize time range for this device if not set
+    if (!deviceTimeRanges[device.device_id]) {
+        deviceTimeRanges[device.device_id] = null; // null = all time
+    }
+    
     card.innerHTML = `
         <div class="device-card-header">
             <h3>${device.name || device.device_id}</h3>
@@ -379,6 +392,16 @@ function createDeviceCard(device, latestReading, readings) {
                 <span class="reading-value">${latestReading?.soil_moisture?.toFixed(1) || '--'}</span>
                 <span class="reading-unit">%</span>
             </div>
+        </div>
+        <div class="chart-controls">
+            <label for="time-range-${device.device_id}">Time Range:</label>
+            <select id="time-range-${device.device_id}" class="time-range-select" data-device-id="${device.device_id}">
+                <option value="3600000">1 hour</option>
+                <option value="86400000">1 day</option>
+                <option value="604800000">1 week</option>
+                <option value="2592000000">1 month</option>
+                <option value="null" selected>All time</option>
+            </select>
         </div>
         <div class="device-chart-container">
             <canvas id="chart-${device.device_id}"></canvas>
@@ -407,8 +430,20 @@ function initializeDeviceChart(deviceId, readings) {
         deviceCharts[deviceId].destroy();
     }
     
-    // Sort readings by timestamp (oldest first)
-    const sortedReadings = [...readings].reverse().slice(-CONFIG.chartMaxPoints);
+    // Filter readings by selected time range
+    const timeRange = deviceTimeRanges[deviceId];
+    let filteredReadings = [...readings];
+    
+    if (timeRange) {
+        const cutoffTime = Date.now() - timeRange;
+        filteredReadings = readings.filter(r => {
+            const timestamp = new Date(r.timestamp || r.server_timestamp).getTime();
+            return timestamp >= cutoffTime;
+        });
+    }
+    
+    // Sort readings by timestamp (oldest first) and limit to chartMaxPoints
+    const sortedReadings = filteredReadings.reverse().slice(-CONFIG.chartMaxPoints);
     
     const labels = sortedReadings.map(r => r.timestamp || r.server_timestamp);
     
@@ -429,7 +464,7 @@ function initializeDeviceChart(deviceId, readings) {
                 {
                     label: 'Humidity (%)',
                     data: sortedReadings.map(r => r.humidity),
-                    borderColor: '#42A5F5', // Blue
+                    borderColor: '#42A5F5', // Light blue
                     backgroundColor: 'rgba(66, 165, 245, 0.1)',
                     yAxisID: 'y',
                     tension: 0.4,
@@ -437,8 +472,8 @@ function initializeDeviceChart(deviceId, readings) {
                 {
                     label: 'Soil Moisture (%)',
                     data: sortedReadings.map(r => r.soil_moisture),
-                    borderColor: '#66BB6A', // Light green
-                    backgroundColor: 'rgba(102, 187, 106, 0.1)',
+                    borderColor: '#1976D2', // Med-dark blue
+                    backgroundColor: 'rgba(25, 118, 210, 0.1)',
                     yAxisID: 'y',
                     tension: 0.4,
                 },
@@ -468,6 +503,14 @@ function initializeDeviceChart(deviceId, readings) {
                 tooltip: {
                     mode: 'index',
                     intersect: false,
+                    callbacks: {
+                        title: function(tooltipItems) {
+                            if (tooltipItems.length > 0) {
+                                return formatChartTimestamp(tooltipItems[0].label);
+                            }
+                            return '';
+                        }
+                    }
                 }
             },
             scales: {
@@ -477,6 +520,10 @@ function initializeDeviceChart(deviceId, readings) {
                         maxTicksLimit: 6,
                         font: {
                             size: 10
+                        },
+                        callback: function(value, index, ticks) {
+                            const label = this.getLabelForValue(value);
+                            return formatChartTimestamp(label);
                         }
                     }
                 },
@@ -668,6 +715,38 @@ function formatTimestamp(timestamp) {
     }
 }
 
+function formatChartTimestamp(timestamp) {
+    if (!timestamp) return '--';
+    try {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - date;
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        
+        // Within last 24 hours: show only time (9:32pm)
+        if (diffMs < oneDayMs) {
+            return date.toLocaleTimeString('en-US', { 
+                hour: 'numeric', 
+                minute: '2-digit',
+                hour12: true 
+            }).toLowerCase();
+        }
+        
+        // Older than 24 hours: show abbreviated month, day, time (Nov 22, 8:43am)
+        const month = date.toLocaleDateString('en-US', { month: 'short' });
+        const day = date.getDate();
+        const time = date.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true 
+        }).toLowerCase();
+        
+        return `${month} ${day}, ${time}`;
+    } catch (e) {
+        return timestamp;
+    }
+}
+
 function updateStatus(message, type = 'info') {
     const statusEl = document.getElementById('status-message');
     statusEl.textContent = message;
@@ -741,12 +820,31 @@ function setupEventListeners() {
     // Refresh data button
     document.getElementById('refresh-btn').addEventListener('click', loadUserData);
     
-    // Auto-refresh toggle
-    document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
-        if (e.target.checked) {
+    // Auto-refresh interval dropdown
+    document.getElementById('auto-refresh-interval').addEventListener('change', (e) => {
+        const interval = parseInt(e.target.value);
+        if (interval > 0) {
+            CONFIG.autoRefreshInterval = interval;
             startAutoRefresh();
         } else {
             stopAutoRefresh();
+        }
+    });
+    
+    // Time range selectors (delegated event listener for dynamic elements)
+    document.addEventListener('change', (e) => {
+        if (e.target.classList.contains('time-range-select')) {
+            const deviceId = e.target.dataset.deviceId;
+            const timeRangeValue = e.target.value;
+            
+            // Update stored time range (null for "all time")
+            deviceTimeRanges[deviceId] = timeRangeValue === 'null' ? null : parseInt(timeRangeValue);
+            
+            // Re-render chart with new time range
+            const deviceReadings = (userData.readings || []).filter(r => r.device_id === deviceId);
+            if (deviceReadings.length > 0) {
+                initializeDeviceChart(deviceId, deviceReadings);
+            }
         }
     });
 }
