@@ -555,27 +555,43 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
         soil_moistures = [r.get('soil_moisture') for r in device_readings if r.get('soil_moisture') is not None]
         lights = [r.get('light') for r in device_readings if r.get('light') is not None]
         
+        # UV light - check both top-level field and raw_json
+        uv_lights = []
+        for r in device_readings:
+            if r.get('uv_light') is not None:
+                uv_lights.append(r.get('uv_light'))
+            elif r.get('raw_json') and r.get('raw_json').get('uv_light') is not None:
+                uv_lights.append(r.get('raw_json').get('uv_light'))
+        
         # Calculate averages
         avg_temp = sum(temperatures) / len(temperatures) if temperatures else None
         avg_humidity = sum(humidities) / len(humidities) if humidities else None
         avg_soil = sum(soil_moistures) / len(soil_moistures) if soil_moistures else None
         avg_light = sum(lights) / len(lights) if lights else None
+        avg_uv = sum(uv_lights) / len(uv_lights) if uv_lights else None
         
         # Collect for overall summary
         all_temperatures.extend(temperatures)
         all_humidities.extend(humidities)
         all_soil_moistures.extend(soil_moistures)
         all_lights.extend(lights)
+        all_uv_lights = uv_lights
         
         # Prepare device data (remove internal fields like _source)
         clean_readings = []
         for reading in device_readings:
+            # Get UV from either top-level or raw_json
+            uv_value = reading.get('uv_light')
+            if uv_value is None and reading.get('raw_json'):
+                uv_value = reading.get('raw_json').get('uv_light')
+            
             clean_reading = {
                 'timestamp': reading.get('timestamp') or reading.get('server_timestamp'),
                 'temperature': reading.get('temperature'),
                 'humidity': reading.get('humidity'),
                 'light': reading.get('light'),
-                'soil_moisture': reading.get('soil_moisture')
+                'soil_moisture': reading.get('soil_moisture'),
+                'uv_light': uv_value
             }
             # Remove None values
             clean_reading = {k: v for k, v in clean_reading.items() if v is not None}
@@ -592,12 +608,15 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
                 'avg_humidity': round(avg_humidity, 2) if avg_humidity else None,
                 'avg_light': round(avg_light, 0) if avg_light else None,
                 'avg_soil_moisture': round(avg_soil, 2) if avg_soil else None,
+                'avg_uv_light': round(avg_uv, 2) if avg_uv else None,
                 'min_temperature': round(min(temperatures), 2) if temperatures else None,
                 'max_temperature': round(max(temperatures), 2) if temperatures else None,
                 'min_humidity': round(min(humidities), 2) if humidities else None,
                 'max_humidity': round(max(humidities), 2) if humidities else None,
                 'min_soil_moisture': round(min(soil_moistures), 2) if soil_moistures else None,
-                'max_soil_moisture': round(max(soil_moistures), 2) if soil_moistures else None
+                'max_soil_moisture': round(max(soil_moistures), 2) if soil_moistures else None,
+                'min_uv_light': round(min(uv_lights), 2) if uv_lights else None,
+                'max_uv_light': round(max(uv_lights), 2) if uv_lights else None
             }
         }
         formatted_devices.append(device_data)
@@ -609,7 +628,8 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
         'avg_temperature': round(sum(all_temperatures) / len(all_temperatures), 2) if all_temperatures else None,
         'avg_humidity': round(sum(all_humidities) / len(all_humidities), 2) if all_humidities else None,
         'avg_soil_moisture': round(sum(all_soil_moistures) / len(all_soil_moistures), 2) if all_soil_moistures else None,
-        'avg_light': round(sum(all_lights) / len(all_lights), 0) if all_lights else None
+        'avg_light': round(sum(all_lights) / len(all_lights), 0) if all_lights else None,
+        'avg_uv_light': round(sum(all_uv_lights) / len(all_uv_lights), 2) if all_uv_lights else None
     }
     
     return {

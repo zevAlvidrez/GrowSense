@@ -234,6 +234,7 @@ def upload_data():
             'humidity': data.get('humidity'),
             'light': data.get('light'),
             'soil_moisture': data.get('soil_moisture'),
+            'uv_light': data.get('uv_light'),  # UV Index from GUVA-S12SD sensor
             'raw_json': data,  # Store full payload for debugging
             'server_timestamp': SERVER_TIMESTAMP  # Firestore server timestamp
         }

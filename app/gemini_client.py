@@ -235,7 +235,7 @@ def get_default_advice(formatted_data, output_format='api'):
             summary = device.get('summary', {})
             if summary.get('avg_temperature'):
                 default_advice['recommendations'].append(
-                    f"Device {device.get('name', device['device_id'])}: Monitor temperature (avg: {summary.get('avg_temperature', 'N/A')}°C)"
+                    f"Device {device.get('name', device['device_id'])}: Monitor temperature (avg: {summary.get('avg_temperature', 'N/A')}°C), UV Index (avg: {summary.get('avg_uv_light', 'N/A')})"
                 )
     else:
         # Return API format
@@ -254,7 +254,7 @@ def get_default_advice(formatted_data, output_format='api'):
             device_advice = {
                 "device_id": device['device_id'],
                 "device_name": device.get('name', device['device_id']),
-                "advice": f"Device is functioning. Average temperature: {summary.get('avg_temperature', 'N/A')}°C, Average humidity: {summary.get('avg_humidity', 'N/A')}%",
+                "advice": f"Device is functioning. Average temperature: {summary.get('avg_temperature', 'N/A')}°C, Average humidity: {summary.get('avg_humidity', 'N/A')}%, UV Index: {summary.get('avg_uv_light', 'N/A')}",
                 "priority": "low",
                 "recommendations": [
                     "Continue monitoring sensor readings",
@@ -305,6 +305,7 @@ def construct_prompt(formatted_data, analysis_history=None):
     - Average humidity: {summary.get('avg_humidity', 'N/A')}%
     - Average soil moisture: {summary.get('avg_soil_moisture', 'N/A')}%
     - Average light: {summary.get('avg_light', 'N/A')} lux
+    - Average UV Index: {summary.get('avg_uv_light', 'N/A')} (range: {summary.get('min_uv_light', 'N/A')} - {summary.get('max_uv_light', 'N/A')})
     - Recent readings: {json.dumps(recent_readings[:10], indent=2, default=str)}  # Show first 10 readings
     """
     
@@ -327,6 +328,7 @@ def construct_prompt(formatted_data, analysis_history=None):
     - Average humidity across all devices: {overall_summary.get('avg_humidity', 'N/A')}%
     - Average soil moisture across all devices: {overall_summary.get('avg_soil_moisture', 'N/A')}%
     - Average light across all devices: {overall_summary.get('avg_light', 'N/A')} lux
+    - Average UV Index across all devices: {overall_summary.get('avg_uv_light', 'N/A')}
     
     Device Details:
     {device_details_section}
@@ -338,6 +340,8 @@ def construct_prompt(formatted_data, analysis_history=None):
     - Your own previous analysis history for this user (if provided)
     - Any patterns or differences between devices if multiple devices are present
     - Summary statistics and recent readings for each device
+    - UV Index readings (0-15 scale): 0-2 is Low, 3-5 is Moderate, 6-7 is High, 8-10 is Very High, 11+ is Extreme
+      Note: Most houseplants prefer indirect light and should have low UV exposure (0-3)
     
     Your entire response MUST be a single, raw JSON object without any markdown formatting (no ``````).
 
@@ -419,6 +423,8 @@ def construct_analysis_prompt(formatted_data, analysis_history=None):
     - Trends from the sensor history across all devices
     - Your own previous analysis history for this user
     - Any patterns or differences between devices if multiple devices are present
+    - UV Index readings (0-15 scale): 0-2 is Low, 3-5 is Moderate, 6-7 is High, 8-10 is Very High, 11+ is Extreme
+      Note: Most houseplants prefer indirect light and should have low UV exposure (0-3)
     
     Your entire response MUST be a single, raw JSON object without any markdown formatting (no ``````).
 

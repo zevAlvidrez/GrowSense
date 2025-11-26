@@ -71,10 +71,10 @@
                 <label for="auto-refresh-interval">Auto-refresh:</label>
                 <select id="auto-refresh-interval" class="refresh-interval-select">
                     <option value="0">Off</option>
-                    <option value="30000">30s</option>
-                    <option value="60000" selected>60s</option>
-                    <option value="300000">5mins</option>
-                    <option value="600000">10mins</option>
+                    <option value="30000">30 seconds</option>
+                    <option value="60000" selected>60 seconds</option>
+                    <option value="300000">5 minutes</option>
+                    <option value="600000">10 minutes</option>
                 </select>
             </div>
         </section>
@@ -91,12 +91,13 @@
                             <th>Temperature (°C)</th>
                             <th>Humidity (%)</th>
                             <th>Light (lux)</th>
+                            <th>UV Index</th>
                             <th>Soil Moisture (%)</th>
                         </tr>
                     </thead>
                     <tbody id="table-body">
                         <tr>
-                            <td colspan="6" class="no-data">No data available. Click "Refresh Data" to load.</td>
+                            <td colspan="7" class="no-data">No data available. Click "Refresh Data" to load.</td>
                         </tr>
                     </tbody>
                 </table>

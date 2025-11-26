@@ -338,6 +338,36 @@ body {
     border-radius: 6px;
 }
 
+.device-reading-split {
+    display: flex;
+    flex-direction: row;
+    gap: var(--spacing-xs);
+    padding: 0;
+    background: transparent;
+}
+
+.device-reading-half {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-xs);
+    background: #F1F8F4;
+    border-radius: 6px;
+    flex: 1;
+}
+
+.device-reading-half:first-child {
+    margin-right: 0;
+}
+
+.device-reading-half .reading-value {
+    font-size: var(--font-size-base);
+}
+
+.device-reading-half .reading-unit {
+    font-size: 0.75rem;
+}
+
 .device-reading .reading-icon {
     font-size: 1.5rem;
 }
@@ -390,6 +420,17 @@ body {
     outline: none;
     border-color: var(--primary-green);
     box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
+}
+
+.no-data-message {
+    padding: var(--spacing-sm);
+    margin-bottom: var(--spacing-sm);
+    background: #FFF3E0;
+    border-left: 3px solid #FF9800;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    text-align: center;
 }
 
 /* Device-specific advice */

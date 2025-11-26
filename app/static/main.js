@@ -94,7 +94,10 @@ function handleAuthLogout() {
     userAdvice = null;
     
     // Clear all charts
-    Object.values(deviceCharts).forEach(chart => chart.destroy());
+    Object.values(deviceCharts).forEach(charts => {
+        if (charts.primary) charts.primary.destroy();
+        if (charts.secondary) charts.secondary.destroy();
+    });
     deviceCharts = {};
     
     // Show login modal, hide dashboard
@@ -366,6 +369,14 @@ function createDeviceCard(device, latestReading, readings) {
         deviceTimeRanges[device.device_id] = null; // null = all time
     }
     
+    // Extract UV light from raw_json if available
+    let uvLight = null;
+    if (latestReading?.raw_json?.uv_light !== undefined) {
+        uvLight = latestReading.raw_json.uv_light;
+    } else if (latestReading?.uv_light !== undefined) {
+        uvLight = latestReading.uv_light;
+    }
+    
     card.innerHTML = `
         <div class="device-card-header">
             <h3>${device.name || device.device_id}</h3>
@@ -382,10 +393,16 @@ function createDeviceCard(device, latestReading, readings) {
                 <span class="reading-value">${latestReading?.humidity?.toFixed(1) || '--'}</span>
                 <span class="reading-unit">%</span>
             </div>
-            <div class="device-reading">
-                <span class="reading-icon">☀️</span>
-                <span class="reading-value">${latestReading?.light ? Math.round(latestReading.light) : '--'}</span>
-                <span class="reading-unit">lux</span>
+            <div class="device-reading device-reading-split">
+                <div class="device-reading-half">
+                    <span class="reading-icon">☀️</span>
+                    <span class="reading-value">${latestReading?.light ? Math.round(latestReading.light) : '--'}</span>
+                    <span class="reading-unit">lux</span>
+                </div>
+                <div class="device-reading-half">
+                    <span class="reading-value">${uvLight !== null ? uvLight.toFixed(1) : '--'}</span>
+                    <span class="reading-unit">UV</span>
+                </div>
             </div>
             <div class="device-reading">
                 <span class="reading-icon">🌿</span>
@@ -403,8 +420,12 @@ function createDeviceCard(device, latestReading, readings) {
                 <option value="null" selected>All time</option>
             </select>
         </div>
+        <div id="no-data-message-${device.device_id}" class="no-data-message" style="display: none;"></div>
         <div class="device-chart-container">
-            <canvas id="chart-${device.device_id}"></canvas>
+            <canvas id="chart-primary-${device.device_id}"></canvas>
+        </div>
+        <div class="device-chart-container">
+            <canvas id="chart-secondary-${device.device_id}"></canvas>
         </div>
         <div id="device-advice-${device.device_id}" class="device-advice" style="display: none;"></div>
     `;
@@ -417,22 +438,30 @@ function createDeviceCard(device, latestReading, readings) {
 // ========================================
 
 function initializeDeviceChart(deviceId, readings) {
-    const canvasId = `chart-${deviceId}`;
-    const canvas = document.getElementById(canvasId);
+    const primaryCanvasId = `chart-primary-${deviceId}`;
+    const secondaryCanvasId = `chart-secondary-${deviceId}`;
+    const primaryCanvas = document.getElementById(primaryCanvasId);
+    const secondaryCanvas = document.getElementById(secondaryCanvasId);
+    const noDataMessageEl = document.getElementById(`no-data-message-${deviceId}`);
     
-    if (!canvas) {
+    if (!primaryCanvas || !secondaryCanvas) {
         console.warn(`Canvas not found for device ${deviceId}`);
         return;
     }
     
-    // Destroy existing chart if any
+    // Destroy existing charts if any
     if (deviceCharts[deviceId]) {
-        deviceCharts[deviceId].destroy();
+        if (deviceCharts[deviceId].primary) deviceCharts[deviceId].primary.destroy();
+        if (deviceCharts[deviceId].secondary) deviceCharts[deviceId].secondary.destroy();
     }
+    
+    // Initialize container if not exists
+    deviceCharts[deviceId] = {};
     
     // Filter readings by selected time range
     const timeRange = deviceTimeRanges[deviceId];
     let filteredReadings = [...readings];
+    let timeRangeText = 'all time';
     
     if (timeRange) {
         const cutoffTime = Date.now() - timeRange;
@@ -440,15 +469,51 @@ function initializeDeviceChart(deviceId, readings) {
             const timestamp = new Date(r.timestamp || r.server_timestamp).getTime();
             return timestamp >= cutoffTime;
         });
+        
+        // Determine time range text for message
+        if (timeRange === 3600000) timeRangeText = 'the past hour';
+        else if (timeRange === 86400000) timeRangeText = 'the past day';
+        else if (timeRange === 604800000) timeRangeText = 'the past week';
+        else if (timeRange === 2592000000) timeRangeText = 'the past month';
+    }
+    
+    // Check if we have any data
+    if (filteredReadings.length === 0) {
+        if (noDataMessageEl) {
+            if (readings.length === 0) {
+                noDataMessageEl.textContent = 'No data received';
+            } else {
+                noDataMessageEl.textContent = `No data received in ${timeRangeText}`;
+            }
+            noDataMessageEl.style.display = 'block';
+        }
+        // Create empty charts
+        const ctxP = primaryCanvas.getContext('2d');
+        const ctxS = secondaryCanvas.getContext('2d');
+        const emptyConfig = {
+            type: 'line',
+            data: { labels: [], datasets: [] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        };
+        deviceCharts[deviceId].primary = new Chart(ctxP, emptyConfig);
+        deviceCharts[deviceId].secondary = new Chart(ctxS, emptyConfig);
+        return;
+    }
+    
+    // Hide no data message if we have data
+    if (noDataMessageEl) {
+        noDataMessageEl.style.display = 'none';
     }
     
     // Sort readings by timestamp (oldest first) and limit to chartMaxPoints
     const sortedReadings = filteredReadings.reverse().slice(-CONFIG.chartMaxPoints);
-    
     const labels = sortedReadings.map(r => r.timestamp || r.server_timestamp);
     
-    const ctx = canvas.getContext('2d');
-    deviceCharts[deviceId] = new Chart(ctx, {
+    // ==========================================
+    // Top Chart: Temp, Humidity, Soil Moisture
+    // ==========================================
+    const ctxPrimary = primaryCanvas.getContext('2d');
+    deviceCharts[deviceId].primary = new Chart(ctxPrimary, {
         type: 'line',
         data: {
             labels: labels,
@@ -466,7 +531,7 @@ function initializeDeviceChart(deviceId, readings) {
                     data: sortedReadings.map(r => r.humidity),
                     borderColor: '#42A5F5', // Light blue
                     backgroundColor: 'rgba(66, 165, 245, 0.1)',
-                    yAxisID: 'y',
+                    yAxisID: 'y1',
                     tension: 0.4,
                 },
                 {
@@ -474,14 +539,6 @@ function initializeDeviceChart(deviceId, readings) {
                     data: sortedReadings.map(r => r.soil_moisture),
                     borderColor: '#1976D2', // Med-dark blue
                     backgroundColor: 'rgba(25, 118, 210, 0.1)',
-                    yAxisID: 'y',
-                    tension: 0.4,
-                },
-                {
-                    label: 'Light (lux)',
-                    data: sortedReadings.map(r => r.light),
-                    borderColor: '#FFC107', // Yellow
-                    backgroundColor: 'rgba(255, 193, 7, 0.1)',
                     yAxisID: 'y1',
                     tension: 0.4,
                 }
@@ -492,13 +549,89 @@ function initializeDeviceChart(deviceId, readings) {
             maintainAspectRatio: false,
             plugins: {
                 legend: {
-                    position: 'bottom',
-                    labels: {
-                        boxWidth: 12,
-                        font: {
-                            size: 11
+                    position: 'top',
+                    align: 'end',
+                    labels: { boxWidth: 10, font: { size: 10 }, padding: 10 }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    callbacks: {
+                        title: function(tooltipItems) {
+                            if (tooltipItems.length > 0) {
+                                return formatChartTimestamp(tooltipItems[0].label);
+                            }
+                            return '';
                         }
                     }
+                }
+            },
+            scales: {
+                x: {
+                    display: false, // Hide X axis labels on top chart
+                    grid: { display: false } // Minimal grid for cleaner look
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: { display: true, text: 'Temp (°C)', font: { size: 9 } },
+                    ticks: { font: { size: 9 } }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: { display: true, text: 'Percentage (%)', font: { size: 9 } },
+                    grid: { drawOnChartArea: false },
+                    ticks: { font: { size: 9 }, max: 100, min: 0 }
+                }
+            }
+        }
+    });
+
+    // ==========================================
+    // Bottom Chart: Light and UV
+    // ==========================================
+    const ctxSecondary = secondaryCanvas.getContext('2d');
+    deviceCharts[deviceId].secondary = new Chart(ctxSecondary, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Light (lux)',
+                    data: sortedReadings.map(r => r.light),
+                    borderColor: '#FFC107', // Yellow
+                    backgroundColor: 'rgba(255, 193, 7, 0.1)',
+                    yAxisID: 'y',
+                    tension: 0.4,
+                },
+                {
+                    label: 'UV Index',
+                    data: sortedReadings.map(r => {
+                        if (r.raw_json && r.raw_json.uv_light !== undefined) {
+                            return r.raw_json.uv_light;
+                        } else if (r.uv_light !== undefined) {
+                            return r.uv_light;
+                        }
+                        return null;
+                    }),
+                    borderColor: '#9C27B0', // Light purple
+                    backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                    yAxisID: 'y1',
+                    tension: 0.4,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    align: 'end',
+                    labels: { boxWidth: 10, font: { size: 10 }, padding: 10 }
                 },
                 tooltip: {
                     mode: 'index',
@@ -518,9 +651,7 @@ function initializeDeviceChart(deviceId, readings) {
                     display: true,
                     ticks: {
                         maxTicksLimit: 6,
-                        font: {
-                            size: 10
-                        },
+                        font: { size: 10 },
                         callback: function(value, index, ticks) {
                             const label = this.getLabelForValue(value);
                             return formatChartTimestamp(label);
@@ -531,24 +662,16 @@ function initializeDeviceChart(deviceId, readings) {
                     type: 'linear',
                     display: true,
                     position: 'left',
-                    ticks: {
-                        font: {
-                            size: 10
-                        }
-                    }
+                    title: { display: true, text: 'Light (lux)', font: { size: 9 } },
+                    ticks: { font: { size: 9 } }
                 },
                 y1: {
                     type: 'linear',
                     display: true,
                     position: 'right',
-                    grid: {
-                        drawOnChartArea: false,
-                    },
-                    ticks: {
-                        font: {
-                            size: 10
-                        }
-                    }
+                    title: { display: true, text: 'UV Index', font: { size: 9 } },
+                    grid: { drawOnChartArea: false },
+                    ticks: { font: { size: 9 }, min: 0, max: 12 } // Reasonable UV max
                 }
             }
         }
@@ -671,7 +794,7 @@ function updateUnifiedTable() {
     tbody.innerHTML = '';
     
     if (!userData || !userData.readings || userData.readings.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="no-data">No data available. Click "Refresh Data" to load.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="no-data">No data available. Click "Refresh Data" to load.</td></tr>';
         return;
     }
     
@@ -688,12 +811,21 @@ function updateUnifiedTable() {
         const light = reading.light;
         const soil = reading.soil_moisture;
         
+        // Extract UV from raw_json if available
+        let uvLight = null;
+        if (reading.raw_json && reading.raw_json.uv_light !== undefined) {
+            uvLight = reading.raw_json.uv_light;
+        } else if (reading.uv_light !== undefined) {
+            uvLight = reading.uv_light;
+        }
+        
         row.innerHTML = `
             <td>${deviceName}</td>
             <td>${formatTimestamp(timestamp)}</td>
             <td>${temp !== null && temp !== undefined ? temp.toFixed(1) : '--'}</td>
             <td>${humidity !== null && humidity !== undefined ? humidity.toFixed(1) : '--'}</td>
             <td>${light !== null && light !== undefined ? Math.round(light) : '--'}</td>
+            <td>${uvLight !== null && uvLight !== undefined ? uvLight.toFixed(1) : '--'}</td>
             <td>${soil !== null && soil !== undefined ? soil.toFixed(1) : '--'}</td>
         `;
         
@@ -771,7 +903,10 @@ function clearAllDisplays() {
     document.getElementById('devices-grid').innerHTML = '';
     
     // Clear charts
-    Object.values(deviceCharts).forEach(chart => chart.destroy());
+    Object.values(deviceCharts).forEach(charts => {
+        if (charts.primary) charts.primary.destroy();
+        if (charts.secondary) charts.secondary.destroy();
+    });
     deviceCharts = {};
     
     // Clear table
