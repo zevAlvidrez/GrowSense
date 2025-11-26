@@ -526,12 +526,20 @@ function updateAdviceDisplay() {
     // Update general advice
     const generalAdviceEl = document.getElementById('general-advice');
     if (userAdvice.overall_advice) {
-        // Escape HTML to prevent XSS and ensure proper display
-        const escapedAdvice = userAdvice.overall_advice
+        // Escape HTML first
+        let escapedAdvice = userAdvice.overall_advice
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Convert **bold** to <strong>
+            .replace(/>/g, '&gt;');
+        
+        // Convert markdown-style formatting to HTML
+        // Handle **bold** text (non-greedy match)
+        escapedAdvice = escapedAdvice.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+        // Handle any remaining single * for emphasis
+        escapedAdvice = escapedAdvice.replace(/\*([^*]+?)\*/g, '<em>$1</em>');
+        // Remove any remaining standalone ** that weren't matched
+        escapedAdvice = escapedAdvice.replace(/\*\*/g, '');
+        
         generalAdviceEl.innerHTML = `<p>${escapedAdvice}</p>`;
     } else {
         generalAdviceEl.innerHTML = '<p>No general advice available.</p>';
@@ -550,12 +558,20 @@ function updateAdviceDisplay() {
         if (validInsights.length > 0) {
             insightsEl.innerHTML = '<h3>Insights:</h3><ul>' + 
                 validInsights.map(insight => {
-                    // Escape HTML and handle markdown-style formatting
-                    const escaped = insight
+                    // Escape HTML first
+                    let escaped = insight
                         .replace(/&/g, '&amp;')
                         .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;')
-                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Convert **bold** to <strong>
+                        .replace(/>/g, '&gt;');
+                    
+                    // Convert markdown-style formatting to HTML
+                    // Handle **bold** text (non-greedy match)
+                    escaped = escaped.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+                    // Handle any remaining single * for emphasis
+                    escaped = escaped.replace(/\*([^*]+?)\*/g, '<em>$1</em>');
+                    // Remove any remaining standalone ** that weren't matched
+                    escaped = escaped.replace(/\*\*/g, '');
+                    
                     return `<li>${escaped}</li>`;
                 }).join('') + 
                 '</ul>';
