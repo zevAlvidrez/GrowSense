@@ -6,7 +6,7 @@ services:
     plan: free
     branch: main
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 'app:create_app()'"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 120 'app:create_app()'"
     healthCheckPath: /health
     envVars:
       - key: FLASK_ENV
