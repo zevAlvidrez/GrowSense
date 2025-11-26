@@ -17,6 +17,7 @@ services:
         value: 3.10.0
       # The following should be set in Render dashboard as secrets:
       # - FIREBASE_SERVICE_ACCOUNT_JSON (paste entire JSON as single line)
+      # - GOOGLE_API_KEY (Google Gemini API key for AI advice)
       # - DEVICE_KEYS_PATH (or keep as ./device_keys.json if you upload the file)
       # - FIREBASE_STORAGE_BUCKET (optional, for image uploads)
 
