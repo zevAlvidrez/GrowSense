@@ -274,11 +274,32 @@ async function loadUserAdvice() {
     
     try {
         const advice = await fetchUserAdvice();
-        userAdvice = advice;
+        
+        // Validate advice structure
+        if (!advice || typeof advice !== 'object') {
+            throw new Error('Invalid advice format received');
+        }
+        
+        // Ensure it has the expected structure
+        if (!advice.overall_advice && !advice.device_advice && !advice.insights) {
+            console.warn('Unexpected advice structure:', advice);
+            // Try to extract if it's nested
+            if (advice.advice) {
+                userAdvice = advice.advice;
+            } else {
+                throw new Error('Advice does not contain expected fields');
+            }
+        } else {
+            userAdvice = advice;
+        }
+        
         updateAdviceDisplay();
     } catch (error) {
         console.error('Error loading advice:', error);
         updateStatus(`Error loading advice: ${error.message}`, 'error');
+        // Clear advice display on error
+        document.getElementById('general-advice').innerHTML = '<p class="error">Failed to load advice. Please try again.</p>';
+        document.getElementById('insights-list').innerHTML = '';
     } finally {
         adviceBtn.disabled = false;
         adviceBtn.textContent = originalText;
@@ -505,7 +526,13 @@ function updateAdviceDisplay() {
     // Update general advice
     const generalAdviceEl = document.getElementById('general-advice');
     if (userAdvice.overall_advice) {
-        generalAdviceEl.innerHTML = `<p>${userAdvice.overall_advice}</p>`;
+        // Escape HTML to prevent XSS and ensure proper display
+        const escapedAdvice = userAdvice.overall_advice
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Convert **bold** to <strong>
+        generalAdviceEl.innerHTML = `<p>${escapedAdvice}</p>`;
     } else {
         generalAdviceEl.innerHTML = '<p>No general advice available.</p>';
     }
@@ -513,9 +540,28 @@ function updateAdviceDisplay() {
     // Update insights
     const insightsEl = document.getElementById('insights-list');
     if (userAdvice.insights && userAdvice.insights.length > 0) {
-        insightsEl.innerHTML = '<h3>Insights:</h3><ul>' + 
-            userAdvice.insights.map(insight => `<li>${insight}</li>`).join('') + 
-            '</ul>';
+        // Filter out default/fallback insights and escape HTML
+        const validInsights = userAdvice.insights.filter(insight => {
+            const lower = insight.toLowerCase();
+            return !lower.includes('sensor data analyzed successfully') && 
+                   !lower.includes('review device-specific recommendations');
+        });
+        
+        if (validInsights.length > 0) {
+            insightsEl.innerHTML = '<h3>Insights:</h3><ul>' + 
+                validInsights.map(insight => {
+                    // Escape HTML and handle markdown-style formatting
+                    const escaped = insight
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Convert **bold** to <strong>
+                    return `<li>${escaped}</li>`;
+                }).join('') + 
+                '</ul>';
+        } else {
+            insightsEl.innerHTML = '';
+        }
     } else {
         insightsEl.innerHTML = '';
     }
