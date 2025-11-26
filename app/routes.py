@@ -23,6 +23,13 @@ from app.firebase_client import (
 from app.gemini_client import get_gemini_advice
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
+# Global Cache for API Key Validation and Device Config
+# Structure: {device_id: {'api_key': '...', 'user_id': '...', 'timestamp': 1234567890}}
+_api_key_cache = {}
+# Structure: {device_id: {'target_interval': 60, 'timestamp': 1234567890}}
+_device_config_cache = {}
+CACHE_DURATION_SECONDS = 300  # 5 minutes cache
+
 bp = Blueprint('main', __name__)
 
 # Load device API keys from JSON file
@@ -43,16 +50,21 @@ def load_device_keys():
 def validate_api_key(device_id, api_key):
     """
     Validate that the provided API key matches the device_id.
-    Checks Firestore first, then falls back to device_keys.json.
-    
-    Args:
-        device_id: Device identifier
-        api_key: API key provided in request
-        
-    Returns:
-        tuple: (is_valid: bool, user_id: str or None)
-               user_id is None for legacy devices from JSON file
+    Checks Cache first, then Firestore, then falls back to device_keys.json.
     """
+    current_time = datetime.utcnow().timestamp()
+    
+    # Check cache first
+    if device_id in _api_key_cache:
+        cached = _api_key_cache[device_id]
+        if current_time - cached['timestamp'] < CACHE_DURATION_SECONDS:
+            # Cache hit
+            if cached['api_key'] == api_key:
+                return (True, cached['user_id'])
+            else:
+                # Invalid key in cache
+                return (False, None)
+    
     db = get_firestore()
     
     # First, check Firestore (reverse lookup: /devices/{deviceId})
@@ -62,8 +74,17 @@ def validate_api_key(device_id, api_key):
     if device_doc.exists:
         device_data = device_doc.to_dict()
         stored_key = device_data.get('api_key')
+        user_id = device_data.get('user_id')
+        
+        # Update cache
+        _api_key_cache[device_id] = {
+            'api_key': stored_key,
+            'user_id': user_id,
+            'timestamp': current_time
+        }
+        
         if stored_key == api_key:
-            return (True, device_data.get('user_id'))
+            return (True, user_id)
         else:
             return (False, None)
     
@@ -249,14 +270,41 @@ def upload_data():
         
         reading_ref = write_reading(reading_doc, device_id, user_id)
         
-        # Update device's last_seen timestamp
+        # Update device's last_seen timestamp and check config
         try:
             db = get_firestore()
             user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
-            user_device_ref.update({'last_seen': SERVER_TIMESTAMP})
             
-            # Check for pending configuration updates
-            device_doc = user_device_ref.get()
+            current_time = datetime.utcnow().timestamp()
+            should_update_last_seen = True
+            device_data = None
+            
+            # Check config cache to reduce reads and writes
+            if device_id in _device_config_cache:
+                cached = _device_config_cache[device_id]
+                # If we cached it less than 60s ago, skip write
+                if current_time - cached['timestamp'] < 60:
+                    should_update_last_seen = False
+                
+                # If cache is still valid (5 mins), use it for config
+                if current_time - cached['timestamp'] < CACHE_DURATION_SECONDS:
+                    device_data = cached['config']
+            
+            # Update last_seen if needed (throttled to once per minute)
+            if should_update_last_seen:
+                user_device_ref.update({'last_seen': SERVER_TIMESTAMP})
+            
+            # Fetch config if not in cache
+            if device_data is None:
+                device_doc = user_device_ref.get()
+                if device_doc.exists:
+                    device_data = device_doc.to_dict()
+                    # Update cache
+                    _device_config_cache[device_id] = {
+                        'config': device_data,
+                        'timestamp': current_time
+                    }
+            
             response_data = {
                 "success": True,
                 "message": "Data uploaded successfully",
@@ -265,10 +313,8 @@ def upload_data():
                 "timestamp": timestamp
             }
             
-            if device_doc.exists:
-                device_data = device_doc.to_dict()
-                if 'target_interval' in device_data:
-                    response_data['sleep_duration'] = device_data['target_interval']
+            if device_data and 'target_interval' in device_data:
+                response_data['sleep_duration'] = device_data['target_interval']
             
             return jsonify(response_data), 201
             
@@ -613,6 +659,10 @@ def update_config(device_id):
         
         if not success:
             return jsonify({"error": "Failed to update configuration"}), 500
+            
+        # Invalidate config cache so next upload picks it up
+        if device_id in _device_config_cache:
+            del _device_config_cache[device_id]
             
         return jsonify({
             "success": True,
