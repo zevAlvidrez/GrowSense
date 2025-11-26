@@ -170,6 +170,14 @@ def get_gemini_advice(formatted_data, output_format='api'):
                     advice['device_advice'] = []
                 if 'insights' not in advice:
                     advice['insights'] = []
+                
+                # Filter device_advice to only include devices that actually exist and have data
+                valid_device_ids = {d.get('device_id') for d in formatted_data.get('devices', [])}
+                if advice.get('device_advice'):
+                    advice['device_advice'] = [
+                        da for da in advice['device_advice']
+                        if da.get('device_id') in valid_device_ids
+                    ]
             
             return advice
             
