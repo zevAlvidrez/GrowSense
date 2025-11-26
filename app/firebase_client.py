@@ -545,6 +545,10 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
         device_id = device['device_id']
         device_readings = readings_by_device.get(device_id, [])
         
+        # Skip devices with no readings (they've been deleted or are inactive)
+        if len(device_readings) == 0:
+            continue
+        
         # Calculate summary statistics
         temperatures = [r.get('temperature') for r in device_readings if r.get('temperature') is not None]
         humidities = [r.get('humidity') for r in device_readings if r.get('humidity') is not None]
