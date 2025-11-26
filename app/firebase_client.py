@@ -350,6 +350,32 @@ def get_device_info(device_id, user_id=None):
     return None
 
 
+def update_device_config(user_id, device_id, config_data):
+    """
+    Update device configuration settings.
+    
+    Args:
+        user_id: Firebase user ID
+        device_id: Device identifier
+        config_data: Dictionary of configuration values to update
+        
+    Returns:
+        bool: True if successful
+    """
+    db = get_firestore()
+    
+    # Reference to user's device document
+    user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
+    
+    # Check if device exists
+    if not user_device_ref.get().exists:
+        return False
+        
+    # Update with new config
+    user_device_ref.update(config_data)
+    return True
+
+
 def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_limit=None):
     """
     Get sensor readings from user's devices.

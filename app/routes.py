@@ -15,6 +15,7 @@ from app.firebase_client import (
     get_user_devices,
     remove_device_from_user,
     get_device_info,
+    update_device_config,
     get_user_device_readings,
     write_reading,
     prepare_data_for_gemini
@@ -253,17 +254,35 @@ def upload_data():
             db = get_firestore()
             user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
             user_device_ref.update({'last_seen': SERVER_TIMESTAMP})
+            
+            # Check for pending configuration updates
+            device_doc = user_device_ref.get()
+            response_data = {
+                "success": True,
+                "message": "Data uploaded successfully",
+                "device_id": device_id,
+                "reading_id": reading_ref.id,
+                "timestamp": timestamp
+            }
+            
+            if device_doc.exists:
+                device_data = device_doc.to_dict()
+                if 'target_interval' in device_data:
+                    response_data['sleep_duration'] = device_data['target_interval']
+            
+            return jsonify(response_data), 201
+            
         except Exception as e:
             # Non-critical: last_seen update failure shouldn't fail the upload
-            print(f"Warning: Failed to update last_seen for device {device_id}: {str(e)}")
-        
-        return jsonify({
-            "success": True,
-            "message": "Data uploaded successfully",
-            "device_id": device_id,
-            "reading_id": reading_ref.id,
-            "timestamp": timestamp
-        }), 201
+            print(f"Warning: Failed to update last_seen or fetch config for device {device_id}: {str(e)}")
+            # Fallback response
+            return jsonify({
+                "success": True,
+                "message": "Data uploaded successfully (with warnings)",
+                "device_id": device_id,
+                "reading_id": reading_ref.id,
+                "timestamp": timestamp
+            }), 201
         
     except Exception as e:
         print(f"Error in upload_data: {str(e)}")
@@ -554,6 +573,56 @@ def get_device(device_id):
         
     except Exception as e:
         print(f"Error in get_device: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@bp.route('/devices/<device_id>/config', methods=['POST'])
+@require_auth
+def update_config(device_id):
+    """
+    Update configuration settings for a specific device.
+    Verifies ownership before updating.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Expected JSON payload:
+    {
+        "target_interval": 60  # Seconds
+    }
+    
+    Returns:
+        JSON confirmation
+    """
+    try:
+        user_id = g.user['uid']
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "Invalid JSON or empty body"}), 400
+            
+        # Verify device belongs to user
+        device_info = get_device_info(device_id, user_id)
+        if not device_info:
+            return jsonify({
+                "error": "Device not found or does not belong to user",
+                "device_id": device_id
+            }), 404
+            
+        # Update config
+        success = update_device_config(user_id, device_id, data)
+        
+        if not success:
+            return jsonify({"error": "Failed to update configuration"}), 500
+            
+        return jsonify({
+            "success": True,
+            "message": "Configuration updated successfully",
+            "device_id": device_id,
+            "config": data
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in update_config: {str(e)}")
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 

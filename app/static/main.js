@@ -369,6 +369,10 @@ function createDeviceCard(device, latestReading, readings) {
         deviceTimeRanges[device.device_id] = null; // null = all time
     }
     
+    // Determine current sampling rate selection
+    // Default to 30s if not known, or use stored value if we have it in device metadata
+    const currentInterval = device.target_interval || 30;
+    
     // Extract UV light from raw_json if available
     let uvLight = null;
     if (latestReading?.raw_json?.uv_light !== undefined) {
@@ -411,14 +415,26 @@ function createDeviceCard(device, latestReading, readings) {
             </div>
         </div>
         <div class="chart-controls">
-            <label for="time-range-${device.device_id}">Time Range:</label>
-            <select id="time-range-${device.device_id}" class="time-range-select" data-device-id="${device.device_id}">
-                <option value="3600000">1 hour</option>
-                <option value="86400000">1 day</option>
-                <option value="604800000">1 week</option>
-                <option value="2592000000">1 month</option>
-                <option value="null" selected>All time</option>
-            </select>
+            <div class="control-group">
+                <label for="time-range-${device.device_id}">Time Range:</label>
+                <select id="time-range-${device.device_id}" class="time-range-select" data-device-id="${device.device_id}">
+                    <option value="3600000">1 hour</option>
+                    <option value="86400000">1 day</option>
+                    <option value="604800000">1 week</option>
+                    <option value="2592000000">1 month</option>
+                    <option value="null" selected>All time</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="sampling-rate-${device.device_id}">Sampling:</label>
+                <select id="sampling-rate-${device.device_id}" class="sampling-rate-select" data-device-id="${device.device_id}">
+                    <option value="15" ${currentInterval == 15 ? 'selected' : ''}>15s</option>
+                    <option value="30" ${currentInterval == 30 ? 'selected' : ''}>30s</option>
+                    <option value="60" ${currentInterval == 60 ? 'selected' : ''}>1m</option>
+                    <option value="900" ${currentInterval == 900 ? 'selected' : ''}>15m</option>
+                    <option value="1800" ${currentInterval == 1800 ? 'selected' : ''}>30m</option>
+                </select>
+            </div>
         </div>
         <div id="no-data-message-${device.device_id}" class="no-data-message" style="display: none;"></div>
         <div class="device-chart-container">
@@ -967,7 +983,7 @@ function setupEventListeners() {
     });
     
     // Time range selectors (delegated event listener for dynamic elements)
-    document.addEventListener('change', (e) => {
+    document.addEventListener('change', async (e) => {
         if (e.target.classList.contains('time-range-select')) {
             const deviceId = e.target.dataset.deviceId;
             const timeRangeValue = e.target.value;
@@ -979,6 +995,39 @@ function setupEventListeners() {
             const deviceReadings = (userData.readings || []).filter(r => r.device_id === deviceId);
             if (deviceReadings.length > 0) {
                 initializeDeviceChart(deviceId, deviceReadings);
+            }
+        } else if (e.target.classList.contains('sampling-rate-select')) {
+            const deviceId = e.target.dataset.deviceId;
+            const newInterval = parseInt(e.target.value);
+            
+            try {
+                // Disable while updating
+                e.target.disabled = true;
+                const originalText = e.target.options[e.target.selectedIndex].text;
+                e.target.options[e.target.selectedIndex].text = 'Saving...';
+                
+                const headers = await getAuthHeaders();
+                const response = await fetch(`${CONFIG.apiBaseUrl}/devices/${deviceId}/config`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({ target_interval: newInterval })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to update configuration');
+                }
+                
+                // Show success briefly
+                e.target.options[e.target.selectedIndex].text = 'Saved!';
+                setTimeout(() => {
+                    e.target.options[e.target.selectedIndex].text = originalText;
+                    e.target.disabled = false;
+                }, 1000);
+                
+            } catch (error) {
+                console.error('Error updating config:', error);
+                alert('Failed to update sampling rate. Please try again.');
+                e.target.disabled = false;
             }
         }
     });

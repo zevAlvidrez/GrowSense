@@ -43,6 +43,7 @@
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <Adafruit_AM2320.h>
+#include <Preferences.h>
 #include "secrets.h"
 
 // ============================================
@@ -52,14 +53,10 @@
 // Server configuration
 const char* SERVER_URL = "https://growsense-wer0.onrender.com/upload_data";
 
-// Sleep configuration - CHANGE THIS TO ADJUST MEASUREMENT INTERVAL
-const uint64_t SLEEP_DURATION_SECONDS = 30;  // Default: 60 seconds (1 minute)
-                                               // Adjust as needed:
-                                               // 30 = 30 seconds
-                                               // 60 = 1 minute
-                                               // 300 = 5 minutes  
-                                               // 900 = 15 minutes
-                                               // 3600 = 1 hour
+// Sleep configuration
+// This is the DEFAULT value if nothing is stored in flash memory
+// It will be overwritten by values from the server
+uint64_t sleep_duration_seconds = 30; 
 
 // WiFi connection timeout
 const int WIFI_CONNECT_TIMEOUT_MS = 30000;   // 30 seconds max for WiFi connection
@@ -112,6 +109,9 @@ TwoWire I2C_AM2320 = TwoWire(1);
 // AM2320 Sensor Object
 Adafruit_AM2320 am2320 = Adafruit_AM2320(&I2C_AM2320);
 
+// Preferences object for storing sleep duration
+Preferences preferences;
+
 // RTC Memory (survives deep sleep)
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR int consecutiveFailures = 0;
@@ -134,10 +134,18 @@ void setup() {
     Serial.println("=================================");
     Serial.print("Boot #");
     Serial.println(bootCount);
+  }
+
+  // Load saved sleep duration
+  preferences.begin("growsense", false); // Namespace "growsense", read/write mode
+  sleep_duration_seconds = preferences.getULong64("sleep_sec", 30); // Default 30s if not found
+  preferences.end();
+
+  if (ENABLE_SERIAL_DEBUG) {
     Serial.print("Consecutive failures: ");
     Serial.println(consecutiveFailures);
     Serial.print("Sleep interval: ");
-    Serial.print(SLEEP_DURATION_SECONDS);
+    Serial.print(sleep_duration_seconds);
     Serial.println(" seconds");
     Serial.println();
   }
@@ -154,7 +162,7 @@ void setup() {
       Serial.println("⚠ Too many failures. Sleeping for extended period...");
     }
     consecutiveFailures = 0;
-    goToSleep(SLEEP_DURATION_SECONDS * 5); // Sleep 5x longer
+    goToSleep(sleep_duration_seconds * 5); // Sleep 5x longer
     return;
   }
   
@@ -174,7 +182,7 @@ void setup() {
       Serial.println("✗ WiFi connection failed. Going to sleep...");
     }
     consecutiveFailures++;
-    goToSleep(SLEEP_DURATION_SECONDS);
+    goToSleep(sleep_duration_seconds);
     return;
   }
   
@@ -237,7 +245,7 @@ void setup() {
   WiFi.mode(WIFI_OFF);
   
   // Go to sleep
-  goToSleep(SLEEP_DURATION_SECONDS);
+  goToSleep(sleep_duration_seconds);
 }
 
 // ============================================
@@ -398,6 +406,42 @@ bool uploadData(float temperature, float humidity, int light, float soilMoisture
       
       // Success codes: 200 (OK) or 201 (Created)
       if (httpResponseCode == 200 || httpResponseCode == 201) {
+        // Check for sleep duration update
+        StaticJsonDocument<512> responseDoc;
+        DeserializationError error = deserializeJson(responseDoc, response);
+        
+        if (!error) {
+          if (responseDoc.containsKey("sleep_duration")) {
+            uint64_t new_sleep = responseDoc["sleep_duration"];
+            
+            // Validate range (15 seconds to 1 hour)
+            if (new_sleep >= 15 && new_sleep <= 3600) {
+              if (new_sleep != sleep_duration_seconds) {
+                if (ENABLE_SERIAL_DEBUG) {
+                  Serial.print("Updating sleep duration to: ");
+                  Serial.println((unsigned long)new_sleep);
+                }
+                
+                // Update global variable
+                sleep_duration_seconds = new_sleep;
+                
+                // Save to flash
+                preferences.begin("growsense", false);
+                preferences.putULong64("sleep_sec", sleep_duration_seconds);
+                preferences.end();
+              }
+            } else {
+              if (ENABLE_SERIAL_DEBUG) {
+                Serial.println("⚠ Received invalid sleep duration (ignored)");
+              }
+            }
+          }
+        } else {
+          if (ENABLE_SERIAL_DEBUG) {
+            Serial.println("⚠ Failed to parse server response JSON");
+          }
+        }
+        
         return true;
       } else if (httpResponseCode == 401) {
         if (ENABLE_SERIAL_DEBUG) {

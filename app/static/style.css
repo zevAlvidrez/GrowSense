@@ -391,8 +391,16 @@ body {
 
 .chart-controls {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: var(--spacing-xs);
+    padding: 0 var(--spacing-xs);
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
 }
 
 .chart-controls label {
@@ -410,6 +418,7 @@ body {
     font-size: var(--font-size-sm);
     cursor: pointer;
     transition: all 0.2s;
+    min-width: 80px;
 }
 
 .chart-controls select:hover {
