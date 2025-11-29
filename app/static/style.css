@@ -634,6 +634,18 @@ tbody tr:hover {
     padding: var(--spacing-lg) !important;
 }
 
+.load-more-container {
+    text-align: center;
+    padding: var(--spacing-md) 0;
+    margin-top: var(--spacing-md);
+}
+
+.load-more-text {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--spacing-sm);
+}
+
 /* ========================================
    Status Bar
    ======================================== */

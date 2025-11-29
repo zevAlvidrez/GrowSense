@@ -489,6 +489,99 @@ def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_li
     return (all_readings, len(device_ids))
 
 
+def get_user_device_readings_since(user_id, since_timestamp, limit=100):
+    """
+    Get sensor readings from user's devices that are newer than since_timestamp.
+    Used for incremental fetching to reduce Firestore reads.
+    
+    Args:
+        user_id: Firebase user ID
+        since_timestamp: ISO timestamp string - only return readings after this time
+        limit: Maximum total number of readings to return (default: 100)
+        
+    Returns:
+        tuple: (readings: list, device_count: int)
+    """
+    db = get_firestore()
+    from datetime import datetime
+    
+    # Parse the since timestamp
+    try:
+        if isinstance(since_timestamp, str):
+            # Handle ISO format with 'Z' suffix
+            since_timestamp = since_timestamp.replace('Z', '+00:00')
+            since_dt = datetime.fromisoformat(since_timestamp)
+        else:
+            since_dt = since_timestamp
+    except Exception as e:
+        print(f"Error parsing since_timestamp: {e}")
+        # Fall back to normal fetch if timestamp is invalid
+        return get_user_device_readings(user_id, limit=limit)
+    
+    # Get user's devices
+    user_devices = get_user_devices(user_id)
+    device_ids = [device['device_id'] for device in user_devices]
+    device_names = {device['device_id']: device.get('name', device['device_id']) 
+                   for device in user_devices}
+    
+    if not device_ids:
+        return ([], 0)
+    
+    all_readings = []
+    
+    for device_id in device_ids:
+        try:
+            device_name = device_names.get(device_id, device_id)
+            
+            # Query only readings newer than since_timestamp
+            readings_ref = db.collection('users').document(user_id)\
+                             .collection('devices').document(device_id)\
+                             .collection('readings')
+            
+            # Filter by server_timestamp > since_dt
+            query = readings_ref.where('server_timestamp', '>', since_dt)\
+                               .order_by('server_timestamp', direction='DESCENDING')\
+                               .limit(limit)
+            
+            docs = query.stream()
+            
+            for doc in docs:
+                reading = doc.to_dict()
+                reading['id'] = doc.id
+                reading['device_id'] = device_id
+                reading['device_name'] = device_name
+                
+                # Convert server_timestamp to string if present
+                if 'server_timestamp' in reading and reading['server_timestamp']:
+                    if hasattr(reading['server_timestamp'], 'isoformat'):
+                        reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                
+                all_readings.append(reading)
+                
+        except Exception as e:
+            print(f"Error querying device {device_id} for incremental fetch: {str(e)}")
+            continue
+    
+    # Sort by server_timestamp (newest first)
+    def get_timestamp(reading):
+        if 'server_timestamp' in reading and reading['server_timestamp']:
+            try:
+                from datetime import datetime
+                if isinstance(reading['server_timestamp'], str):
+                    return datetime.fromisoformat(reading['server_timestamp'].replace('Z', '+00:00'))
+                return reading['server_timestamp']
+            except:
+                pass
+        return datetime.min
+    
+    all_readings.sort(key=get_timestamp, reverse=True)
+    
+    # Apply total limit
+    all_readings = all_readings[:limit]
+    
+    return (all_readings, len(device_ids))
+
+
 def write_reading(reading_doc, device_id, user_id):
     """
     Write a reading to the user-centric Firestore location.

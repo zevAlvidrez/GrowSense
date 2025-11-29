@@ -17,10 +17,12 @@ from app.firebase_client import (
     get_device_info,
     update_device_config,
     get_user_device_readings,
+    get_user_device_readings_since,
     write_reading,
     prepare_data_for_gemini
 )
 from app.gemini_client import get_gemini_advice
+from app.cache import readings_cache
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 
 # Global Cache for API Key Validation and Device Config
@@ -269,6 +271,17 @@ def upload_data():
             return jsonify({"error": "Device not registered to a user. Please register device first."}), 400
         
         reading_ref = write_reading(reading_doc, device_id, user_id)
+        
+        # Update server-side cache with new reading
+        try:
+            # Add reading ID for cache tracking
+            reading_doc['id'] = reading_ref.id
+            reading_doc['device_id'] = device_id
+            reading_doc['device_name'] = device_id  # Will be updated from device metadata if available
+            readings_cache.update_reading(user_id, device_id, reading_doc)
+        except Exception as e:
+            # Cache update is non-critical
+            print(f"Warning: Failed to update cache for user {user_id}, device {device_id}: {str(e)}")
         
         # Update device's last_seen timestamp and check config
         try:
@@ -722,12 +735,17 @@ def get_user_data():
     """
     Get sensor readings from all devices belonging to the authenticated user.
     
+    Supports incremental fetching via 'since' parameter to reduce Firestore reads.
+    Uses server-side caching to further reduce database load.
+    
     Requires Authorization header: "Bearer <firebase_id_token>"
     
     Query parameters:
         limit: Total number of readings to return (default: 100, max: 1000)
+        since: ISO timestamp - only return readings newer than this (for incremental fetch)
         device_id: Optional filter to get data from specific device (must belong to user)
         per_device_limit: Optional limit per device (useful when user has many devices)
+        offset: Offset for pagination (used with Load More button)
     
     Returns:
         JSON with readings from all user's devices, sorted by timestamp (newest first)
@@ -742,6 +760,14 @@ def get_user_data():
         except ValueError:
             limit = 100
         
+        since_timestamp = request.args.get('since')
+        
+        # Offset for pagination (Load More functionality)
+        try:
+            offset = int(request.args.get('offset', 0))
+        except ValueError:
+            offset = 0
+        
         per_device_limit = request.args.get('per_device_limit')
         if per_device_limit:
             try:
@@ -753,25 +779,119 @@ def get_user_data():
         device_id_filter = request.args.get('device_id')
         device_ids = [device_id_filter] if device_id_filter else None
         
-        # Get readings
+        # Handle incremental fetch (since parameter)
+        if since_timestamp:
+            # Incremental fetch - only new readings
+            readings, device_count = get_user_device_readings_since(
+                user_id,
+                since_timestamp=since_timestamp,
+                limit=limit
+            )
+            
+            return jsonify({
+                "success": True,
+                "user_id": user_id,
+                "device_count": device_count,
+                "total_readings": len(readings),
+                "readings": readings,
+                "incremental": True
+            }), 200
+        
+        # Check server-side cache first (only for full fetches, not incremental)
+        if not offset and not device_id_filter:
+            cached_data = readings_cache.get(user_id)
+            
+            if cached_data:
+                # Cache hit - format and return
+                readings = flatten_cached_readings(
+                    cached_data['readings_by_device'],
+                    limit=limit
+                )
+                
+                return jsonify({
+                    "success": True,
+                    "user_id": user_id,
+                    "device_count": len(cached_data['devices']),
+                    "total_readings": len(readings),
+                    "readings": readings,
+                    "cached": True
+                }), 200
+        
+        # Cache miss or special request - fetch from Firestore
         readings, device_count = get_user_device_readings(
             user_id, 
             device_ids=device_ids,
-            limit=limit,
+            limit=limit + offset,  # Add offset for pagination
             per_device_limit=per_device_limit
         )
+        
+        # Apply offset for pagination
+        if offset > 0:
+            readings = readings[offset:]
+        
+        # Populate cache for next request (only for full fetches without filters)
+        if not device_id_filter and not offset:
+            try:
+                devices = get_user_devices(user_id)
+                readings_by_device = organize_readings_by_device(readings)
+                readings_cache.set(user_id, devices, readings_by_device)
+            except Exception as e:
+                print(f"Warning: Failed to populate cache: {str(e)}")
         
         return jsonify({
             "success": True,
             "user_id": user_id,
             "device_count": device_count,
             "total_readings": len(readings),
-            "readings": readings
+            "readings": readings,
+            "cached": False
         }), 200
         
     except Exception as e:
         print(f"Error in get_user_data: {str(e)}")
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+def flatten_cached_readings(readings_by_device, limit=100):
+    """
+    Flatten readings_by_device dictionary into a single sorted list.
+    
+    Args:
+        readings_by_device: Dict mapping device_id to list of readings
+        limit: Maximum number of readings to return
+        
+    Returns:
+        List of readings sorted by timestamp (newest first)
+    """
+    all_readings = []
+    for device_id, readings in readings_by_device.items():
+        all_readings.extend(readings)
+    
+    # Sort by server_timestamp (newest first)
+    all_readings.sort(key=lambda r: r.get('server_timestamp', ''), reverse=True)
+    
+    return all_readings[:limit]
+
+
+def organize_readings_by_device(readings):
+    """
+    Organize a flat list of readings into a dictionary keyed by device_id.
+    
+    Args:
+        readings: List of reading dictionaries (each with device_id field)
+        
+    Returns:
+        Dict mapping device_id to list of readings
+    """
+    readings_by_device = {}
+    for reading in readings:
+        device_id = reading.get('device_id')
+        if device_id:
+            if device_id not in readings_by_device:
+                readings_by_device[device_id] = []
+            readings_by_device[device_id].append(reading)
+    
+    return readings_by_device
 
 
 @bp.route('/user_data/<device_id>', methods=['GET'])

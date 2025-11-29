@@ -22,6 +22,16 @@ let userDevices = [];
 let userData = null;
 let userAdvice = null;
 
+// Data cache for incremental fetching
+let dataCache = {
+    readings: [],
+    last_fetch_timestamp: null
+};
+
+// Table display state
+let tableDisplayLimit = 20; // How many readings currently shown in table
+const TABLE_INCREMENT = 20; // How many more to show when "Load More" clicked
+
 // ========================================
 // Firebase Auth Initialization
 // ========================================
@@ -192,9 +202,18 @@ async function fetchUserDevices() {
 async function fetchUserData() {
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${CONFIG.apiBaseUrl}/user_data?limit=200`, {
-            headers: headers
-        });
+        
+        // Build URL with optional incremental fetch parameter
+        // Limit to 200 readings per device (evenly spaced through selected time)
+        let url = `${CONFIG.apiBaseUrl}/user_data?limit=800`; // 200 per device × 4 devices max
+        
+        // If we have cached data with a timestamp, do incremental fetch
+        if (dataCache.last_fetch_timestamp) {
+            url += `&since=${encodeURIComponent(dataCache.last_fetch_timestamp)}`;
+            console.log(`Fetching incremental data since ${dataCache.last_fetch_timestamp}`);
+        }
+        
+        const response = await fetch(url, { headers: headers });
         
         if (response.status === 401) {
             if (currentUser) {
@@ -209,11 +228,69 @@ async function fetchUserData() {
         }
         
         const data = await response.json();
+        
+        // Handle incremental fetch: merge new data with cache
+        if (dataCache.last_fetch_timestamp && dataCache.readings.length > 0) {
+            console.log(`Merging ${data.readings?.length || 0} new readings with ${dataCache.readings.length} cached readings`);
+            
+            // Merge new readings with cached readings
+            const mergedReadings = mergeReadings(dataCache.readings, data.readings || []);
+            
+            // Update data with merged readings
+            data.readings = mergedReadings;
+            data.total_readings = mergedReadings.length;
+            
+            // Update cache
+            dataCache.readings = mergedReadings;
+        } else {
+            // First load or cache was empty
+            console.log(`Initial data load: ${data.readings?.length || 0} readings`);
+            dataCache.readings = data.readings || [];
+        }
+        
+        // Update last fetch timestamp for next incremental fetch
+        dataCache.last_fetch_timestamp = new Date().toISOString();
+        
         return data;
     } catch (error) {
         console.error('Error fetching user data:', error);
         throw error;
     }
+}
+
+function mergeReadings(oldReadings, newReadings) {
+    if (!newReadings || newReadings.length === 0) {
+        return oldReadings;
+    }
+    
+    // Create a map of existing readings by ID to avoid duplicates
+    const readingMap = new Map();
+    
+    // Add old readings to map
+    oldReadings.forEach(reading => {
+        if (reading.id) {
+            readingMap.set(reading.id, reading);
+        }
+    });
+    
+    // Add new readings (will overwrite if ID exists)
+    newReadings.forEach(reading => {
+        if (reading.id) {
+            readingMap.set(reading.id, reading);
+        }
+    });
+    
+    // Convert back to array and sort by timestamp (newest first)
+    const merged = Array.from(readingMap.values());
+    merged.sort((a, b) => {
+        const timeA = new Date(a.server_timestamp || a.timestamp);
+        const timeB = new Date(b.server_timestamp || b.timestamp);
+        return timeB - timeA; // Descending order (newest first)
+    });
+    
+    // Keep only most recent 1000 readings to prevent memory bloat
+    // (with 4 devices × 200 readings = 800, this gives us some buffer)
+    return merged.slice(0, 1000);
 }
 
 async function fetchUserAdvice() {
@@ -259,6 +336,9 @@ async function loadUserData() {
         
         userDevices = devices.slice(0, CONFIG.maxDevices); // Limit to 4 devices
         userData = data;
+        
+        // Reset table display limit when loading fresh data
+        tableDisplayLimit = 20;
         
         // Update displays
         updateDeviceCards();
@@ -811,13 +891,17 @@ function updateUnifiedTable() {
     
     if (!userData || !userData.readings || userData.readings.length === 0) {
         tbody.innerHTML = '<tr><td colspan="7" class="no-data">No data available. Click "Refresh Data" to load.</td></tr>';
+        updateLoadMoreButton(0, 0);
         return;
     }
     
-    // Show up to 50 most recent readings
-    const readings = userData.readings.slice(0, 50);
+    const allReadings = userData.readings;
+    const totalReadings = allReadings.length;
     
-    readings.forEach(reading => {
+    // Show only the first 'tableDisplayLimit' readings
+    const displayedReadings = allReadings.slice(0, tableDisplayLimit);
+    
+    displayedReadings.forEach(reading => {
         const row = document.createElement('tr');
         
         const deviceName = reading.device_name || reading.device_id || 'Unknown';
@@ -847,6 +931,84 @@ function updateUnifiedTable() {
         
         tbody.appendChild(row);
     });
+    
+    // Update Load More button visibility
+    updateLoadMoreButton(displayedReadings.length, totalReadings);
+}
+
+function updateLoadMoreButton(displayed, total) {
+    const loadMoreContainer = document.getElementById('load-more-container');
+    const loadMoreBtn = document.getElementById('load-more-btn');
+    const loadMoreText = document.getElementById('load-more-text');
+    
+    if (!loadMoreContainer || !loadMoreBtn || !loadMoreText) return;
+    
+    const remaining = total - displayed;
+    
+    if (remaining > 0) {
+        loadMoreContainer.style.display = 'block';
+        loadMoreText.textContent = `Showing ${displayed} of ${total} readings`;
+        loadMoreBtn.textContent = `Load ${Math.min(TABLE_INCREMENT, remaining)} More`;
+    } else {
+        loadMoreContainer.style.display = 'none';
+    }
+}
+
+function loadMoreReadings() {
+    if (!userData || !userData.readings) return;
+    
+    const totalReadings = userData.readings.length;
+    const currentlyDisplayed = tableDisplayLimit;
+    
+    // Check if we've exhausted cached data
+    if (currentlyDisplayed >= totalReadings) {
+        // Option B: Fetch more from Firestore
+        loadMoreFromFirestore();
+    } else {
+        // Option A: Reveal more from cache
+        tableDisplayLimit += TABLE_INCREMENT;
+        updateUnifiedTable();
+    }
+}
+
+async function loadMoreFromFirestore() {
+    const loadMoreBtn = document.getElementById('load-more-btn');
+    const originalText = loadMoreBtn.textContent;
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.textContent = 'Loading...';
+    
+    try {
+        // Fetch additional readings with offset
+        const currentCount = userData.readings.length;
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${CONFIG.apiBaseUrl}/user_data?limit=${TABLE_INCREMENT}&offset=${currentCount}`, {
+            headers: headers
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.readings && data.readings.length > 0) {
+            // Append new readings to userData
+            userData.readings = userData.readings.concat(data.readings);
+            tableDisplayLimit += data.readings.length;
+            updateUnifiedTable();
+        } else {
+            // No more data available
+            const loadMoreContainer = document.getElementById('load-more-container');
+            loadMoreContainer.style.display = 'none';
+        }
+        
+    } catch (error) {
+        console.error('Error loading more readings:', error);
+        updateStatus('Error loading more data', 'error');
+    } finally {
+        loadMoreBtn.disabled = false;
+        loadMoreBtn.textContent = originalText;
+    }
 }
 
 // ========================================
@@ -970,6 +1132,12 @@ function setupEventListeners() {
     
     // Refresh data button
     document.getElementById('refresh-btn').addEventListener('click', loadUserData);
+    
+    // Load More button
+    const loadMoreBtn = document.getElementById('load-more-btn');
+    if (loadMoreBtn) {
+        loadMoreBtn.addEventListener('click', loadMoreReadings);
+    }
     
     // Auto-refresh interval dropdown
     document.getElementById('auto-refresh-interval').addEventListener('change', (e) => {
