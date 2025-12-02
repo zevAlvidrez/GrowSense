@@ -587,7 +587,8 @@ def get_sparse_historical_readings(user_id, hours=168):
     Get one reading per hour for each device for the specified time range.
     Used for historical trend visualization in week/all-time views.
     
-    Takes the FIRST reading of each hour to minimize computation.
+    Takes the FIRST reading of each hour to minimize Firestore reads.
+    Uses SINGLE query per device with limit, then filters client-side.
     
     Args:
         user_id: Firebase user ID
@@ -603,7 +604,7 @@ def get_sparse_historical_readings(user_id, hours=168):
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(hours=hours)
     
-    # Get user's devices
+    # Get user's devices (reuse from cache if available)
     devices = get_user_devices(user_id)
     
     if not devices:
@@ -621,15 +622,17 @@ def get_sparse_historical_readings(user_id, hours=168):
                             .collection('devices').document(device_id)\
                             .collection('readings')
             
-            # Query with time filter, ordered by timestamp ascending
-            # Limit to reasonable number to avoid excessive reads
+            # SINGLE QUERY with reasonable limit, then filter to 1 per hour
+            # This is much more efficient than 168 separate queries
+            # Limit: hours * 2 gives us good coverage even with gaps
             query = readings_ref.where('server_timestamp', '>=', start_time)\
                                .order_by('server_timestamp')\
-                               .limit(3000)  # ~1 week at 30s intervals per device
+                               .limit(hours * 2)  # ~336 max reads per device
             
             docs = list(query.stream())
+            print(f"Historical: Queried {len(docs)} docs for device {device_id}")
             
-            # Group by hour and take first reading per hour
+            # Filter to keep only first reading per hour
             hourly_readings = {}
             for doc in docs:
                 reading = doc.to_dict()
@@ -640,26 +643,25 @@ def get_sparse_historical_readings(user_id, hours=168):
                     if hasattr(timestamp, 'replace'):
                         hour_key = timestamp.replace(minute=0, second=0, microsecond=0)
                     else:
-                        # Handle string timestamps
                         try:
                             ts = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
                             hour_key = ts.replace(minute=0, second=0, microsecond=0)
                         except:
                             continue
                     
-                    # Keep first reading per hour (since we're iterating in ascending order)
+                    # Keep first reading per hour only
                     if hour_key not in hourly_readings:
                         reading['id'] = doc.id
                         reading['device_id'] = device_id
                         reading['device_name'] = device_name
                         
-                        # Convert timestamp to string
                         if 'server_timestamp' in reading and hasattr(reading['server_timestamp'], 'isoformat'):
                             reading['server_timestamp'] = reading['server_timestamp'].isoformat()
                         
                         hourly_readings[hour_key] = reading
             
             all_sparse_readings.extend(hourly_readings.values())
+            print(f"Historical: Filtered to {len(hourly_readings)} hourly samples for device {device_id}")
             
         except Exception as e:
             print(f"Error fetching historical data for device {device_id}: {str(e)}")

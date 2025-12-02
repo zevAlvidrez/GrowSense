@@ -11,6 +11,7 @@ const CONFIG = {
     maxDevices: 4, // Maximum devices to display
     recentReadingsLimit: 120, // High-res readings to keep (1 hour at 30s intervals)
     historicalHours: 168, // Hours of historical data to fetch (1 week)
+    historicalEmptyFetchCooldownMs: 60 * 60 * 1000, // 1 hour cooldown if fetch returns 0 results
 };
 
 // localStorage cache key prefix
@@ -33,6 +34,10 @@ let dataCache = {
     hourly_samples: [],     // Sparse historical samples (1 per hour)
     last_fetch_timestamp: null
 };
+
+// Flag to prevent multiple historical fetches
+let historicalFetchInProgress = false;
+let historicalFetchCompleted = false;
 
 // ========================================
 // localStorage Cache Functions
@@ -61,16 +66,21 @@ function loadFromLocalStorage(userId) {
     return null;
 }
 
-function saveToLocalStorage(userId, cacheData) {
+function saveToLocalStorage(userId, cacheData, historicalFetchAttempted = false) {
     if (!userId) return;
     try {
         const key = getLocalStorageKey(userId);
+        const existing = loadFromLocalStorage(userId);
         const toSave = {
             user_id: userId,
             cached_at: new Date().toISOString(),
             readings: cacheData.readings || [],
             hourly_samples: cacheData.hourly_samples || [],
-            last_fetch_timestamp: cacheData.last_fetch_timestamp
+            last_fetch_timestamp: cacheData.last_fetch_timestamp,
+            // Track when we last attempted historical fetch (for empty result cooldown)
+            historical_fetch_attempted_at: historicalFetchAttempted 
+                ? new Date().toISOString() 
+                : (existing?.historical_fetch_attempted_at || null)
         };
         localStorage.setItem(key, JSON.stringify(toSave));
         console.log(`Saved cache for user ${userId}: ${toSave.readings.length} recent, ${toSave.hourly_samples.length} hourly`);
@@ -152,6 +162,20 @@ function initializeFirebase() {
 // ========================================
 
 async function handleAuthSuccess(user) {
+    // IMPORTANT: Reset historical fetch flags when user changes
+    // This handles both fresh login AND user switching
+    if (!currentUser || currentUser.uid !== user.uid) {
+        console.log('[Auth] New user detected, resetting historical fetch flags');
+        historicalFetchCompleted = false;
+        historicalFetchInProgress = false;
+        // Also clear in-memory cache for new user
+        dataCache = {
+            readings: [],
+            hourly_samples: [],
+            last_fetch_timestamp: null
+        };
+    }
+    
     currentUser = user;
     try {
         idToken = await user.getIdToken();
@@ -191,12 +215,14 @@ function handleAuthLogout() {
     userData = null;
     userAdvice = null;
     
-    // Clear in-memory cache
+    // Clear in-memory cache and reset flags
     dataCache = {
         readings: [],
         hourly_samples: [],
         last_fetch_timestamp: null
     };
+    historicalFetchInProgress = false;
+    historicalFetchCompleted = false;
     
     // Clear all charts
     Object.values(deviceCharts).forEach(charts => {
@@ -357,11 +383,14 @@ async function fetchHistoricalData() {
     /**
      * Fetch sparse historical readings (one per hour) for week/all-time views.
      * This data is cached in localStorage and only fetched once.
+     * 
+     * WARNING: This is expensive (~1000 Firestore reads)! Should only be called ONCE per user.
      */
     try {
         const headers = await getAuthHeaders();
         const url = `${CONFIG.apiBaseUrl}/user_data/historical?hours=${CONFIG.historicalHours}`;
         
+        console.warn(`⚠️ [EXPENSIVE] Fetching historical data - THIS SHOULD ONLY HAPPEN ONCE PER USER!`);
         console.log(`Fetching historical data for past ${CONFIG.historicalHours} hours...`);
         
         const response = await fetch(url, { headers: headers });
@@ -464,16 +493,42 @@ async function loadUserData() {
             throw new Error('Not authenticated');
         }
         
-        // Check localStorage for existing cache
+        // Check localStorage for existing cache FOR THIS USER
         const cachedData = loadFromLocalStorage(userId);
-        let needsHistoricalFetch = !cachedData || !cachedData.hourly_samples || cachedData.hourly_samples.length === 0;
         
-        // Restore cache from localStorage if available
-        if (cachedData) {
+        // IMPORTANT: Only fetch historical if we truly don't have it cached
+        // Check both localStorage AND in-memory cache, AND the fetch completed flag
+        const hasHistoricalInLocalStorage = cachedData?.hourly_samples?.length > 0;
+        const hasHistoricalInMemory = dataCache.hourly_samples?.length > 0;
+        
+        // For users with no data: check if we recently tried to fetch (cooldown period)
+        // This prevents spamming fetches for accounts with no data
+        let recentlyFetchedEmpty = false;
+        if (cachedData?.historical_fetch_attempted_at) {
+            const lastAttempt = new Date(cachedData.historical_fetch_attempted_at).getTime();
+            const cooldownExpired = (Date.now() - lastAttempt) > CONFIG.historicalEmptyFetchCooldownMs;
+            recentlyFetchedEmpty = !cooldownExpired;
+            if (recentlyFetchedEmpty) {
+                const minutesRemaining = Math.round((CONFIG.historicalEmptyFetchCooldownMs - (Date.now() - lastAttempt)) / 60000);
+                console.log(`[Cache Check] Empty fetch cooldown active (${minutesRemaining} min remaining)`);
+            }
+        }
+        
+        // Need to fetch if: no data in cache AND we haven't completed a fetch for this session AND not in cooldown
+        let needsHistoricalFetch = !hasHistoricalInLocalStorage && !hasHistoricalInMemory && !historicalFetchCompleted && !recentlyFetchedEmpty;
+        
+        console.log(`[Cache Check] localStorage: ${hasHistoricalInLocalStorage ? cachedData.hourly_samples.length + ' samples' : 'empty'}, memory: ${hasHistoricalInMemory ? dataCache.hourly_samples.length + ' samples' : 'empty'}, fetchCompleted: ${historicalFetchCompleted}, cooldown: ${recentlyFetchedEmpty}, needsFetch: ${needsHistoricalFetch}`);
+        
+        // Restore cache from localStorage if available (and not already in memory)
+        if (cachedData && !hasHistoricalInMemory) {
             dataCache.readings = cachedData.readings || [];
             dataCache.hourly_samples = cachedData.hourly_samples || [];
             dataCache.last_fetch_timestamp = cachedData.last_fetch_timestamp;
-            console.log('Restored cache from localStorage');
+            // Mark historical as complete since we loaded it from localStorage
+            if (cachedData.hourly_samples?.length > 0) {
+                historicalFetchCompleted = true;
+            }
+            console.log('[Cache] Restored from localStorage');
         }
         
         // Fetch devices and recent data
@@ -485,25 +540,40 @@ async function loadUserData() {
         userDevices = devices.slice(0, CONFIG.maxDevices); // Limit to 4 devices
         userData = data;
         
-        // Fetch historical data if not in cache (one-time operation)
+        // Fetch historical data ONLY if needed (one-time per user)
+        let historicalFetchJustAttempted = false;
         if (needsHistoricalFetch) {
-            console.log('No historical data in cache, fetching...');
-            try {
-                const historicalReadings = await fetchHistoricalData();
-                dataCache.hourly_samples = historicalReadings;
-                console.log(`Loaded ${historicalReadings.length} historical hourly samples`);
-            } catch (histError) {
-                console.error('Error fetching historical data:', histError);
-                // Continue without historical data
-                dataCache.hourly_samples = [];
+            if (historicalFetchInProgress) {
+                console.log('[Historical] Fetch already in progress, waiting...');
+            } else {
+                historicalFetchInProgress = true;
+                historicalFetchJustAttempted = true;
+                console.log('[Historical] Fetching historical data (this should only happen ONCE per user)...');
+                try {
+                    const historicalReadings = await fetchHistoricalData();
+                    dataCache.hourly_samples = historicalReadings;
+                    console.log(`[Historical] Loaded ${historicalReadings.length} hourly samples`);
+                } catch (histError) {
+                    console.error('[Historical] Error:', histError);
+                    // Continue without historical data
+                    dataCache.hourly_samples = [];
+                } finally {
+                    historicalFetchInProgress = false;
+                    historicalFetchCompleted = true; // Mark complete even if 0 results
+                }
             }
+        } else {
+            console.log(`[Historical] Using cached data (${dataCache.hourly_samples?.length || 0} samples)`);
         }
         
         // Save updated cache to localStorage
-        saveToLocalStorage(userId, dataCache);
+        // Pass true if we just attempted a historical fetch (for cooldown tracking)
+        saveToLocalStorage(userId, dataCache, historicalFetchJustAttempted);
         
-        // Reset table display limit when loading fresh data
-        tableDisplayLimit = 20;
+        // Reset table display limit only on initial load, not refreshes
+        if (!cachedData) {
+            tableDisplayLimit = 20;
+        }
         
         // Update displays
         updateDeviceCards();
@@ -611,8 +681,10 @@ function createDeviceCard(device, latestReading, readings) {
     const statusClass = isOnline ? 'status-online' : 'status-offline';
     const statusText = isOnline ? '● Online' : '○ Offline';
     
-    // Initialize time range for this device if not set
-    if (!deviceTimeRanges[device.device_id]) {
+    // Preserve existing time range for this device (don't reset on refresh)
+    const existingTimeRange = deviceTimeRanges[device.device_id];
+    // Only initialize to null if truly not set (undefined)
+    if (existingTimeRange === undefined) {
         deviceTimeRanges[device.device_id] = null; // null = all time
     }
     
@@ -665,10 +737,10 @@ function createDeviceCard(device, latestReading, readings) {
             <div class="control-group">
                 <label for="time-range-${device.device_id}">Time Range:</label>
                 <select id="time-range-${device.device_id}" class="time-range-select" data-device-id="${device.device_id}">
-                    <option value="3600000">1 hour</option>
-                    <option value="86400000">1 day</option>
-                    <option value="604800000">1 week</option>
-                    <option value="null" selected>All time</option>
+                    <option value="3600000" ${deviceTimeRanges[device.device_id] === 3600000 ? 'selected' : ''}>1 hour</option>
+                    <option value="86400000" ${deviceTimeRanges[device.device_id] === 86400000 ? 'selected' : ''}>1 day</option>
+                    <option value="604800000" ${deviceTimeRanges[device.device_id] === 604800000 ? 'selected' : ''}>1 week</option>
+                    <option value="null" ${deviceTimeRanges[device.device_id] === null || deviceTimeRanges[device.device_id] === undefined ? 'selected' : ''}>All time</option>
                 </select>
             </div>
             <div class="control-group">
