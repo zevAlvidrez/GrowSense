@@ -737,10 +737,10 @@ function createDeviceCard(device, latestReading, readings) {
             <div class="control-group">
                 <label for="time-range-${device.device_id}">Time Range:</label>
                 <select id="time-range-${device.device_id}" class="time-range-select" data-device-id="${device.device_id}">
-                    <option value="3600000" ${deviceTimeRanges[device.device_id] === 3600000 ? 'selected' : ''}>1 hour</option>
-                    <option value="86400000" ${deviceTimeRanges[device.device_id] === 86400000 ? 'selected' : ''}>1 day</option>
-                    <option value="604800000" ${deviceTimeRanges[device.device_id] === 604800000 ? 'selected' : ''}>1 week</option>
-                    <option value="null" ${deviceTimeRanges[device.device_id] === null || deviceTimeRanges[device.device_id] === undefined ? 'selected' : ''}>All time</option>
+                    <option value="3600000">1 hour</option>
+                    <option value="86400000">1 day</option>
+                    <option value="604800000">1 week</option>
+                    <option value="null">All time</option>
                 </select>
             </div>
             <div class="control-group">
@@ -763,6 +763,13 @@ function createDeviceCard(device, latestReading, readings) {
         </div>
         <div id="device-advice-${device.device_id}" class="device-advice" style="display: none;"></div>
     `;
+    
+    // Set dropdown value programmatically (more reliable than selected attribute in innerHTML)
+    const timeRangeSelect = card.querySelector(`#time-range-${device.device_id}`);
+    if (timeRangeSelect) {
+        const currentRange = deviceTimeRanges[device.device_id];
+        timeRangeSelect.value = currentRange === null || currentRange === undefined ? 'null' : String(currentRange);
+    }
     
     return card;
 }
