@@ -582,6 +582,95 @@ def get_user_device_readings_since(user_id, since_timestamp, limit=100):
     return (all_readings, len(device_ids))
 
 
+def get_sparse_historical_readings(user_id, hours=168):
+    """
+    Get one reading per hour for each device for the specified time range.
+    Used for historical trend visualization in week/all-time views.
+    
+    Takes the FIRST reading of each hour to minimize computation.
+    
+    Args:
+        user_id: Firebase user ID
+        hours: Number of hours of history (default 168 = 1 week)
+        
+    Returns:
+        List of readings, one per hour per device, sorted by timestamp
+    """
+    db = get_firestore()
+    from datetime import datetime, timedelta
+    
+    # Calculate time range
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(hours=hours)
+    
+    # Get user's devices
+    devices = get_user_devices(user_id)
+    
+    if not devices:
+        return []
+    
+    all_sparse_readings = []
+    
+    for device in devices:
+        device_id = device['device_id']
+        device_name = device.get('name', device_id)
+        
+        try:
+            # Query readings for this device in the time range
+            readings_ref = db.collection('users').document(user_id)\
+                            .collection('devices').document(device_id)\
+                            .collection('readings')
+            
+            # Query with time filter, ordered by timestamp ascending
+            # Limit to reasonable number to avoid excessive reads
+            query = readings_ref.where('server_timestamp', '>=', start_time)\
+                               .order_by('server_timestamp')\
+                               .limit(3000)  # ~1 week at 30s intervals per device
+            
+            docs = list(query.stream())
+            
+            # Group by hour and take first reading per hour
+            hourly_readings = {}
+            for doc in docs:
+                reading = doc.to_dict()
+                timestamp = reading.get('server_timestamp')
+                
+                if timestamp:
+                    # Create hour key (truncate to hour)
+                    if hasattr(timestamp, 'replace'):
+                        hour_key = timestamp.replace(minute=0, second=0, microsecond=0)
+                    else:
+                        # Handle string timestamps
+                        try:
+                            ts = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+                            hour_key = ts.replace(minute=0, second=0, microsecond=0)
+                        except:
+                            continue
+                    
+                    # Keep first reading per hour (since we're iterating in ascending order)
+                    if hour_key not in hourly_readings:
+                        reading['id'] = doc.id
+                        reading['device_id'] = device_id
+                        reading['device_name'] = device_name
+                        
+                        # Convert timestamp to string
+                        if 'server_timestamp' in reading and hasattr(reading['server_timestamp'], 'isoformat'):
+                            reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                        
+                        hourly_readings[hour_key] = reading
+            
+            all_sparse_readings.extend(hourly_readings.values())
+            
+        except Exception as e:
+            print(f"Error fetching historical data for device {device_id}: {str(e)}")
+            continue
+    
+    # Sort by timestamp (oldest first)
+    all_sparse_readings.sort(key=lambda r: r.get('server_timestamp', ''))
+    
+    return all_sparse_readings
+
+
 def write_reading(reading_doc, device_id, user_id):
     """
     Write a reading to the user-centric Firestore location.

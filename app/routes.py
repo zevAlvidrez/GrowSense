@@ -894,6 +894,48 @@ def organize_readings_by_device(readings):
     return readings_by_device
 
 
+@bp.route('/user_data/historical', methods=['GET'])
+@require_auth
+def get_historical_data():
+    """
+    Get sparse historical readings (one per hour) for trend visualization.
+    Used by frontend to populate localStorage cache for week/all-time views.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Query parameters:
+        hours: Number of hours of history to fetch (default: 168 = 1 week, max: 336 = 2 weeks)
+    
+    Returns:
+        JSON with one reading per hour per device (first reading of each hour)
+    """
+    try:
+        user_id = g.user['uid']
+        
+        # Parse hours parameter
+        try:
+            hours = int(request.args.get('hours', 168))
+            hours = min(hours, 336)  # Cap at 2 weeks
+        except ValueError:
+            hours = 168
+        
+        # Get sparse historical readings
+        from app.firebase_client import get_sparse_historical_readings
+        readings = get_sparse_historical_readings(user_id, hours)
+        
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "hours_requested": hours,
+            "total_readings": len(readings),
+            "readings": readings
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in get_historical_data: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
 @bp.route('/user_data/<device_id>', methods=['GET'])
 @require_auth
 def get_user_device_data(device_id):

@@ -12,41 +12,64 @@ This document explains the caching system implemented in GrowSense to dramatical
 
 ## Architecture Components
 
-### 1. Frontend Cache (Browser Memory)
-**Location:** `app/static/main.js` - `dataCache` object
+### 1. Frontend Cache (Browser Memory + localStorage)
+**Location:** `app/static/main.js` - `dataCache` object + localStorage
 
-**Purpose:** Store all loaded readings in browser memory and only fetch new data on refresh.
+**Purpose:** Store readings in browser memory for fast access, with localStorage persistence for page reloads.
 
 **How It Works:**
 ```javascript
-// Structure
+// In-memory structure
 dataCache = {
-    readings: [/* all readings loaded so far */],
-    last_fetch_timestamp: "2024-11-29T10:30:00Z"
+    readings: [/* Recent high-res readings, last ~120 per device */],
+    hourly_samples: [/* Sparse historical, 1 per hour for past week */],
+    last_fetch_timestamp: "2024-12-02T10:30:00Z"
 }
 
-// First page load
-User opens page → Fetch 800 readings (200 per device × 4 devices)
-                → Store in dataCache
-                → Display charts and table
-                → Set last_fetch_timestamp
+// localStorage structure (persists across page reloads)
+localStorage['growsense_cache_{userId}'] = {
+    user_id: "abc123",
+    cached_at: "2024-12-02T10:30:00Z",
+    readings: [...],           // Recent high-res readings
+    hourly_samples: [...],     // Historical hourly samples (1 week)
+    last_fetch_timestamp: "..."
+}
 
-// Auto-refresh (60 seconds later)
-Timer triggers → Fetch only readings AFTER last_fetch_timestamp
-              → Merge new readings with cached readings
-              → Update charts and table
-              → Update last_fetch_timestamp
+// First page load (cold start - no localStorage)
+User opens page → Fetch 480 recent readings (120 per device × 4 devices)
+                → Fetch ~500 historical hourly samples (ONE TIME)
+                → Store in dataCache AND localStorage
+                → Display charts and table
+
+// Page reload (warm start - localStorage exists)
+User reloads   → Load from localStorage instantly
+              → Fetch only NEW readings (incremental)
+              → Update dataCache and localStorage
+              → Display with minimal latency
+
+// Timeframe switching (NO database reads!)
+User selects "1 week" → Read from cached hourly_samples
+                      → Re-render chart with historical data
+                      → Zero Firestore reads
 ```
 
 **Benefits:**
-- **First load:** 803 Firestore reads (800 readings + 3 device metadata)
-- **Subsequent refreshes:** ~6 Firestore reads (3 device metadata + ~3 new readings)
-- **Savings:** 803 → 6 per refresh (99.2% reduction)
+- **Cold start (first ever visit):** ~1,000 Firestore reads (480 recent + ~500 historical)
+- **Warm start (page reload):** ~6 Firestore reads (incremental only)
+- **Timeframe switching:** 0 Firestore reads (served from localStorage)
+- **Savings:** Timeframe changes are now FREE
 
 **Cache Lifetime:**
-- Lives in browser memory only (not localStorage)
-- Lost on page reload
-- Maximum 1000 readings retained to prevent memory bloat
+- **In-memory:** Lost when tab closes
+- **localStorage:** Persists forever until manually cleared or user logs out
+- Maximum 120 readings per device for recent data
+- Historical samples: 1 reading per hour for past 168 hours (1 week)
+
+**User-Specific Caching:**
+- Cache key includes user ID: `growsense_cache_{userId}`
+- Switching accounts clears the old user's cache
+- Each user has isolated data in localStorage
+- Multiple browser windows share the same localStorage
 
 ---
 
@@ -123,6 +146,33 @@ query = readings_ref.where('server_timestamp', '>', since_timestamp)
 
 ---
 
+### 4. Historical Sparse Sampling
+**Location:** Backend `get_sparse_historical_readings()` function, `/user_data/historical` endpoint
+
+**Purpose:** Fetch one reading per hour for week-long trend visualization without loading all data.
+
+**How It Works:**
+```python
+# Frontend requests: /user_data/historical?hours=168 (1 week)
+# Backend:
+1. Query all readings in time range (up to 3000 per device)
+2. Group by hour (truncate timestamp to hour boundary)
+3. Take FIRST reading of each hour
+4. Return sparse dataset (~168 readings per device for 1 week)
+```
+
+**Read Cost:**
+- One-time fetch: ~3000 reads per device × 4 devices = ~12,000 reads MAX
+- Actual reads depend on how much data exists (usually much less)
+- Cached in localStorage forever - never re-fetched
+
+**Used For:**
+- "1 Day" view: Shows ~24 hourly samples
+- "1 Week" view: Shows ~168 hourly samples (downsampled to 120 for chart)
+- "All Time" view: Uses same data as 1 week (sparse sampling)
+
+---
+
 ## Data Flow Diagrams
 
 ### Device Upload Flow
@@ -178,44 +228,50 @@ Backend Routes
 
 ## Firestore Usage Calculations
 
-### Scenario 1: 4 Devices Active, Dashboard Open 24/7
+### Scenario 1: 3 Devices Active, Dashboard Open Throughout Day
 
 **Device Configuration:**
-- 4 devices uploading every 30 seconds
+- 3 devices uploading every 60 seconds (1 minute)
 - Dashboard auto-refresh every 60 seconds
-- Dashboard left open for 24 hours
+- Dashboard used throughout the day with page reloads
 
 #### Device Uploads (24 hours)
 ```
-Uploads per device: 24 hours × 60 min × 2 uploads/min = 2,880 uploads/day
-Total uploads: 2,880 × 4 devices = 11,520 uploads/day
+Uploads per device: 24 hours × 60 uploads/hour = 1,440 uploads/day
+Total uploads: 1,440 × 3 devices = 4,320 uploads/day
 
 Firestore operations per upload:
 - Writes: 2 (reading + last_seen, but last_seen throttled to 1/min)
 - Reads: 0 (API key cached, device config cached)
 
-Daily writes: 11,520 readings + (1,440 last_seen × 4 devices) = 17,280 writes/day
+Daily writes: 4,320 readings + (1,440 last_seen × 3 devices) = ~8,640 writes/day
 Daily reads from uploads: ~100 reads/day (cache misses)
 ```
 
-#### Dashboard Refreshes (24 hours)
+#### Dashboard Usage (with localStorage caching)
 ```
-Refreshes per day: 24 hours × 60 refreshes/hour = 1,440 refreshes/day
+First visit of day (cold start, no localStorage):
+- Recent readings: 120 × 3 devices = 360 reads
+- Historical hourly samples: ~168 × 3 devices = ~500 reads (varies by data)
+- Device metadata: 3 reads
+- Total cold start: ~863 reads
 
-With caching:
-- First load: 803 reads (800 readings + 3 devices)
-- Next 1,439 refreshes within 5 min windows: ~6 reads each
-  (3 device metadata + 3 new readings via incremental fetch)
+Page reloads (warm start, localStorage exists):
+- Only incremental reads: ~6 reads per reload
 
-Daily reads from dashboard: 803 + (1,439 × 6) = 9,437 reads/day
+Timeframe switching:
+- ZERO reads (served from localStorage)
+
+Example day: 1 cold start + 20 page reloads + 50 timeframe switches
+= 863 + (20 × 6) + (50 × 0) = ~983 reads
 ```
 
 #### Total Daily Usage
 ```
-Writes: 17,280/day (well under Spark limit of 20,000/day)
-Reads: 9,537/day (well under Spark limit of 50,000/day)
+Writes: ~8,640/day (43% of 20,000/day limit)
+Reads: ~1,083/day (2% of 50,000/day limit)
 
-✅ SAFE: 81% under read limit
+✅ VERY SAFE: 98% under read limit, 57% under write limit
 ```
 
 ---
@@ -388,19 +444,30 @@ def cache_stats():
 
 ## Summary
 
-The GrowSense caching system uses a **three-tier approach**:
+The GrowSense caching system uses a **four-tier approach**:
 
-1. **Frontend cache:** Eliminates redundant fetches of old data
-2. **Server cache:** Serves recent data without Firestore queries
-3. **Incremental fetching:** Only queries new readings when cache expires
+1. **localStorage cache:** Persists data across page reloads (user-specific)
+2. **Frontend memory cache:** Fast in-session data access
+3. **Server cache:** Serves recent data without Firestore queries
+4. **Incremental + sparse fetching:** Only queries new readings, fetches historical data once
 
 **Result:**
-- Dashboard can run 24/7 for 5+ days on Spark plan
-- Devices can upload indefinitely without hitting limits
-- Real-time updates preserved (60-second refresh)
-- ~95% reduction in Firestore reads
+- Dashboard can run indefinitely on Spark plan
+- Page reloads cost ~6 reads (not 800+)
+- Timeframe switching costs ZERO reads (served from localStorage)
+- ~99% reduction in Firestore reads for typical usage
 
-**Key Metric:** From 61,800 reads per 2.5 hours → 9,437 reads per 24 hours
+**Key Metrics:**
+- Cold start (first visit): ~863 reads (one time)
+- Warm start (page reload): ~6 reads
+- Timeframe switch: 0 reads
+- Daily usage: ~1,000 reads (vs 50,000 limit)
 
-This architecture scales well and leaves headroom for growth while staying on the free tier.
+**Chart Display:**
+- All charts limited to 120 data points maximum
+- 1 hour view: Uses recent high-resolution data (full fidelity)
+- 1 day/week/all-time views: Uses hourly samples (sparse but accurate trends)
+- Data automatically downsampled for smooth visualization
+
+This architecture scales well and leaves massive headroom for growth while staying on the free tier.
 

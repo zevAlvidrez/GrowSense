@@ -7,9 +7,14 @@
 const CONFIG = {
     apiBaseUrl: window.location.origin,
     autoRefreshInterval: 60000, // 60 seconds
-    chartMaxPoints: 50,
+    chartMaxPoints: 120, // Max points on any chart
     maxDevices: 4, // Maximum devices to display
+    recentReadingsLimit: 120, // High-res readings to keep (1 hour at 30s intervals)
+    historicalHours: 168, // Hours of historical data to fetch (1 week)
 };
+
+// localStorage cache key prefix
+const CACHE_KEY_PREFIX = 'growsense_cache_';
 
 // Global state
 let firebaseAuth = null;
@@ -22,11 +27,89 @@ let userDevices = [];
 let userData = null;
 let userAdvice = null;
 
-// Data cache for incremental fetching
+// Data cache for incremental fetching (in-memory)
 let dataCache = {
-    readings: [],
+    readings: [],           // Recent high-res readings
+    hourly_samples: [],     // Sparse historical samples (1 per hour)
     last_fetch_timestamp: null
 };
+
+// ========================================
+// localStorage Cache Functions
+// ========================================
+
+function getLocalStorageKey(userId) {
+    return `${CACHE_KEY_PREFIX}${userId}`;
+}
+
+function loadFromLocalStorage(userId) {
+    if (!userId) return null;
+    try {
+        const key = getLocalStorageKey(userId);
+        const cached = localStorage.getItem(key);
+        if (cached) {
+            const data = JSON.parse(cached);
+            // Verify the cache belongs to this user (extra safety)
+            if (data.user_id === userId) {
+                console.log(`Loaded cache for user ${userId}: ${data.readings?.length || 0} recent, ${data.hourly_samples?.length || 0} hourly`);
+                return data;
+            }
+        }
+    } catch (e) {
+        console.error('Error loading from localStorage:', e);
+    }
+    return null;
+}
+
+function saveToLocalStorage(userId, cacheData) {
+    if (!userId) return;
+    try {
+        const key = getLocalStorageKey(userId);
+        const toSave = {
+            user_id: userId,
+            cached_at: new Date().toISOString(),
+            readings: cacheData.readings || [],
+            hourly_samples: cacheData.hourly_samples || [],
+            last_fetch_timestamp: cacheData.last_fetch_timestamp
+        };
+        localStorage.setItem(key, JSON.stringify(toSave));
+        console.log(`Saved cache for user ${userId}: ${toSave.readings.length} recent, ${toSave.hourly_samples.length} hourly`);
+    } catch (e) {
+        console.error('Error saving to localStorage:', e);
+        // If storage is full, try clearing old caches
+        if (e.name === 'QuotaExceededError') {
+            clearOldCaches(userId);
+        }
+    }
+}
+
+function clearLocalStorageCache(userId) {
+    if (!userId) return;
+    try {
+        const key = getLocalStorageKey(userId);
+        localStorage.removeItem(key);
+        console.log(`Cleared cache for user ${userId}`);
+    } catch (e) {
+        console.error('Error clearing localStorage:', e);
+    }
+}
+
+function clearOldCaches(keepUserId) {
+    // Clear caches for other users to free up space
+    try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(CACHE_KEY_PREFIX) && key !== getLocalStorageKey(keepUserId)) {
+                keysToRemove.push(key);
+            }
+        }
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+        console.log(`Cleared ${keysToRemove.length} old cache entries`);
+    } catch (e) {
+        console.error('Error clearing old caches:', e);
+    }
+}
 
 // Table display state
 let tableDisplayLimit = 20; // How many readings currently shown in table
@@ -97,11 +180,23 @@ async function handleAuthSuccess(user) {
 }
 
 function handleAuthLogout() {
+    // Clear localStorage cache for the logging out user
+    if (currentUser?.uid) {
+        clearLocalStorageCache(currentUser.uid);
+    }
+    
     currentUser = null;
     idToken = null;
     userDevices = [];
     userData = null;
     userAdvice = null;
+    
+    // Clear in-memory cache
+    dataCache = {
+        readings: [],
+        hourly_samples: [],
+        last_fetch_timestamp: null
+    };
     
     // Clear all charts
     Object.values(deviceCharts).forEach(charts => {
@@ -204,8 +299,8 @@ async function fetchUserData() {
         const headers = await getAuthHeaders();
         
         // Build URL with optional incremental fetch parameter
-        // Limit to 200 readings per device (evenly spaced through selected time)
-        let url = `${CONFIG.apiBaseUrl}/user_data?limit=800`; // 200 per device × 4 devices max
+        // Limit to 120 readings per device (1 hour at 30s intervals)
+        let url = `${CONFIG.apiBaseUrl}/user_data?limit=${CONFIG.recentReadingsLimit * CONFIG.maxDevices}`;
         
         // If we have cached data with a timestamp, do incremental fetch
         if (dataCache.last_fetch_timestamp) {
@@ -258,6 +353,41 @@ async function fetchUserData() {
     }
 }
 
+async function fetchHistoricalData() {
+    /**
+     * Fetch sparse historical readings (one per hour) for week/all-time views.
+     * This data is cached in localStorage and only fetched once.
+     */
+    try {
+        const headers = await getAuthHeaders();
+        const url = `${CONFIG.apiBaseUrl}/user_data/historical?hours=${CONFIG.historicalHours}`;
+        
+        console.log(`Fetching historical data for past ${CONFIG.historicalHours} hours...`);
+        
+        const response = await fetch(url, { headers: headers });
+        
+        if (response.status === 401) {
+            if (currentUser) {
+                idToken = await currentUser.getIdToken(true);
+                return fetchHistoricalData(); // Retry
+            }
+            throw new Error('Authentication required');
+        }
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log(`Fetched ${data.total_readings || 0} historical hourly samples`);
+        
+        return data.readings || [];
+    } catch (error) {
+        console.error('Error fetching historical data:', error);
+        throw error;
+    }
+}
+
 function mergeReadings(oldReadings, newReadings) {
     if (!newReadings || newReadings.length === 0) {
         return oldReadings;
@@ -288,9 +418,10 @@ function mergeReadings(oldReadings, newReadings) {
         return timeB - timeA; // Descending order (newest first)
     });
     
-    // Keep only most recent 1000 readings to prevent memory bloat
-    // (with 4 devices × 200 readings = 800, this gives us some buffer)
-    return merged.slice(0, 1000);
+    // Keep only most recent readings to prevent memory bloat
+    // 120 per device × 4 devices = 480 max recent readings
+    const maxReadings = CONFIG.recentReadingsLimit * CONFIG.maxDevices;
+    return merged.slice(0, maxReadings);
 }
 
 async function fetchUserAdvice() {
@@ -328,7 +459,24 @@ async function loadUserData() {
     updateStatus('Loading data...', 'loading');
     
     try {
-        // Fetch devices and data in parallel
+        const userId = currentUser?.uid;
+        if (!userId) {
+            throw new Error('Not authenticated');
+        }
+        
+        // Check localStorage for existing cache
+        const cachedData = loadFromLocalStorage(userId);
+        let needsHistoricalFetch = !cachedData || !cachedData.hourly_samples || cachedData.hourly_samples.length === 0;
+        
+        // Restore cache from localStorage if available
+        if (cachedData) {
+            dataCache.readings = cachedData.readings || [];
+            dataCache.hourly_samples = cachedData.hourly_samples || [];
+            dataCache.last_fetch_timestamp = cachedData.last_fetch_timestamp;
+            console.log('Restored cache from localStorage');
+        }
+        
+        // Fetch devices and recent data
         const [devices, data] = await Promise.all([
             fetchUserDevices(),
             fetchUserData()
@@ -337,13 +485,32 @@ async function loadUserData() {
         userDevices = devices.slice(0, CONFIG.maxDevices); // Limit to 4 devices
         userData = data;
         
+        // Fetch historical data if not in cache (one-time operation)
+        if (needsHistoricalFetch) {
+            console.log('No historical data in cache, fetching...');
+            try {
+                const historicalReadings = await fetchHistoricalData();
+                dataCache.hourly_samples = historicalReadings;
+                console.log(`Loaded ${historicalReadings.length} historical hourly samples`);
+            } catch (histError) {
+                console.error('Error fetching historical data:', histError);
+                // Continue without historical data
+                dataCache.hourly_samples = [];
+            }
+        }
+        
+        // Save updated cache to localStorage
+        saveToLocalStorage(userId, dataCache);
+        
         // Reset table display limit when loading fresh data
         tableDisplayLimit = 20;
         
         // Update displays
         updateDeviceCards();
         updateUnifiedTable();
-        updateStatus(`✓ Loaded ${data.total_readings || 0} readings`, 'success');
+        
+        const totalReadings = (data.total_readings || 0) + (dataCache.hourly_samples?.length || 0);
+        updateStatus(`✓ Loaded ${data.total_readings || 0} recent + ${dataCache.hourly_samples?.length || 0} historical`, 'success');
         updateDataCount(data.total_readings || 0);
         updateLastUpdated();
         
@@ -501,7 +668,6 @@ function createDeviceCard(device, latestReading, readings) {
                     <option value="3600000">1 hour</option>
                     <option value="86400000">1 day</option>
                     <option value="604800000">1 week</option>
-                    <option value="2592000000">1 month</option>
                     <option value="null" selected>All time</option>
                 </select>
             </div>
@@ -533,6 +699,31 @@ function createDeviceCard(device, latestReading, readings) {
 // Chart Functions - Individual Device Charts
 // ========================================
 
+function downsampleReadings(readings, maxPoints) {
+    /**
+     * Downsample readings to maxPoints while preserving trends.
+     * Uses simple stride-based sampling (every Nth point).
+     * For more accurate trends, could use LTTB algorithm.
+     */
+    if (!readings || readings.length <= maxPoints) {
+        return readings;
+    }
+    
+    const stride = Math.ceil(readings.length / maxPoints);
+    const sampled = [];
+    
+    for (let i = 0; i < readings.length; i += stride) {
+        sampled.push(readings[i]);
+    }
+    
+    // Always include the last reading for most recent data
+    if (sampled[sampled.length - 1] !== readings[readings.length - 1]) {
+        sampled.push(readings[readings.length - 1]);
+    }
+    
+    return sampled;
+}
+
 function initializeDeviceChart(deviceId, readings) {
     const primaryCanvasId = `chart-primary-${deviceId}`;
     const secondaryCanvasId = `chart-secondary-${deviceId}`;
@@ -554,32 +745,65 @@ function initializeDeviceChart(deviceId, readings) {
     // Initialize container if not exists
     deviceCharts[deviceId] = {};
     
-    // Filter readings by selected time range
+    // Get selected time range
     const timeRange = deviceTimeRanges[deviceId];
-    let filteredReadings = [...readings];
+    let chartReadings = [];
     let timeRangeText = 'all time';
     
-    if (timeRange) {
+    // Select data source based on timeframe
+    // 1 hour (3600000ms): Use recent high-res readings
+    // 1 day (86400000ms): Use hourly samples
+    // 1 week (604800000ms): Use hourly samples
+    // All time (null): Use hourly samples (sparse)
+    
+    if (timeRange === 3600000) {
+        // 1 hour view: use recent high-res readings
+        timeRangeText = 'the past hour';
         const cutoffTime = Date.now() - timeRange;
-        filteredReadings = readings.filter(r => {
+        chartReadings = readings.filter(r => {
             const timestamp = new Date(r.timestamp || r.server_timestamp).getTime();
             return timestamp >= cutoffTime;
         });
+    } else {
+        // Day/Week/All time: use hourly samples from cache
+        const hourlyForDevice = (dataCache.hourly_samples || []).filter(r => r.device_id === deviceId);
         
-        // Determine time range text for message
-        if (timeRange === 3600000) timeRangeText = 'the past hour';
-        else if (timeRange === 86400000) timeRangeText = 'the past day';
-        else if (timeRange === 604800000) timeRangeText = 'the past week';
-        else if (timeRange === 2592000000) timeRangeText = 'the past month';
+        if (timeRange === 86400000) {
+            // 1 day: filter hourly samples to last 24 hours
+            timeRangeText = 'the past day';
+            const cutoffTime = Date.now() - timeRange;
+            chartReadings = hourlyForDevice.filter(r => {
+                const timestamp = new Date(r.timestamp || r.server_timestamp).getTime();
+                return timestamp >= cutoffTime;
+            });
+        } else if (timeRange === 604800000) {
+            // 1 week: use all hourly samples (up to 168 hours)
+            timeRangeText = 'the past week';
+            const cutoffTime = Date.now() - timeRange;
+            chartReadings = hourlyForDevice.filter(r => {
+                const timestamp = new Date(r.timestamp || r.server_timestamp).getTime();
+                return timestamp >= cutoffTime;
+            });
+        } else {
+            // All time (null): use all hourly samples, downsample if needed
+            timeRangeText = 'all time';
+            chartReadings = [...hourlyForDevice];
+        }
+        
+        // If no hourly samples, fall back to recent readings
+        if (chartReadings.length === 0) {
+            console.log(`No hourly samples for ${deviceId}, using recent readings`);
+            chartReadings = [...readings];
+        }
     }
     
     // Check if we have any data
-    if (filteredReadings.length === 0) {
+    if (chartReadings.length === 0) {
         if (noDataMessageEl) {
-            if (readings.length === 0) {
+            if (readings.length === 0 && (dataCache.hourly_samples || []).length === 0) {
                 noDataMessageEl.textContent = 'No data received';
             } else {
-                noDataMessageEl.textContent = `No data received in ${timeRangeText}`;
+                noDataMessageEl.textContent = `No data for ${timeRangeText}`;
             }
             noDataMessageEl.style.display = 'block';
         }
@@ -601,8 +825,15 @@ function initializeDeviceChart(deviceId, readings) {
         noDataMessageEl.style.display = 'none';
     }
     
-    // Sort readings by timestamp (oldest first) and limit to chartMaxPoints
-    const sortedReadings = filteredReadings.reverse().slice(-CONFIG.chartMaxPoints);
+    // Sort readings by timestamp (oldest first)
+    chartReadings.sort((a, b) => {
+        const timeA = new Date(a.timestamp || a.server_timestamp).getTime();
+        const timeB = new Date(b.timestamp || b.server_timestamp).getTime();
+        return timeA - timeB; // Ascending order (oldest first for chart)
+    });
+    
+    // Downsample to max chartMaxPoints (120)
+    const sortedReadings = downsampleReadings(chartReadings, CONFIG.chartMaxPoints);
     const labels = sortedReadings.map(r => r.timestamp || r.server_timestamp);
     
     // ==========================================
@@ -767,7 +998,9 @@ function initializeDeviceChart(deviceId, readings) {
                     position: 'right',
                     title: { display: true, text: 'UV Index', font: { size: 9 } },
                     grid: { drawOnChartArea: false },
-                    ticks: { font: { size: 9 }, min: 0, max: 12 } // Reasonable UV max
+                    ticks: { font: { size: 9 } },
+                    min: 0,           // Hard minimum: never show negative
+                    suggestedMax: 1.0 // Soft max: starts at 1.0, expands if data exceeds
                 }
             }
         }
@@ -1160,10 +1393,9 @@ function setupEventListeners() {
             deviceTimeRanges[deviceId] = timeRangeValue === 'null' ? null : parseInt(timeRangeValue);
             
             // Re-render chart with new time range
-            const deviceReadings = (userData.readings || []).filter(r => r.device_id === deviceId);
-            if (deviceReadings.length > 0) {
-                initializeDeviceChart(deviceId, deviceReadings);
-            }
+            // Pass recent readings; the chart function will use hourly samples for longer timeframes
+            const deviceReadings = (userData?.readings || []).filter(r => r.device_id === deviceId);
+            initializeDeviceChart(deviceId, deviceReadings);
         } else if (e.target.classList.contains('sampling-rate-select')) {
             const deviceId = e.target.dataset.deviceId;
             const newInterval = parseInt(e.target.value);
