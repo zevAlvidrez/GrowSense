@@ -830,10 +830,13 @@ def get_user_data():
             readings = readings[offset:]
         
         # Populate cache for next request (only for full fetches without filters)
+        # FIX: Extract device info from readings instead of making another DB call
+        # This saves N reads (where N = number of devices)
         if not device_id_filter and not offset:
             try:
-                devices = get_user_devices(user_id)
                 readings_by_device = organize_readings_by_device(readings)
+                # Extract minimal device info from readings (already have device_id, device_name)
+                devices = extract_devices_from_readings(readings)
                 readings_cache.set(user_id, devices, readings_by_device)
             except Exception as e:
                 print(f"Warning: Failed to populate cache: {str(e)}")
@@ -1046,6 +1049,28 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
         'devices': formatted_devices,
         'overall_summary': overall_summary
     }
+
+
+def extract_devices_from_readings(readings):
+    """
+    Extract minimal device info from readings to avoid extra DB call.
+    Each reading already contains device_id and device_name.
+    
+    Args:
+        readings: List of reading dictionaries
+        
+    Returns:
+        List of device dictionaries with device_id and name
+    """
+    devices_seen = {}
+    for reading in readings:
+        device_id = reading.get('device_id')
+        if device_id and device_id not in devices_seen:
+            devices_seen[device_id] = {
+                'device_id': device_id,
+                'name': reading.get('device_name', device_id)
+            }
+    return list(devices_seen.values())
 
 
 @bp.route('/user_data/historical', methods=['GET'])

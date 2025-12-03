@@ -418,6 +418,12 @@ def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_li
         limit = 100
     limit = min(limit, 1000)  # Cap at 1000
     
+    # FIX: Calculate per-device limit to distribute total limit evenly
+    # This prevents querying `limit` docs from EACH device (N * limit reads)
+    # Instead, we query `limit / N` docs from each device (limit reads total)
+    if per_device_limit is None:
+        per_device_limit = max(1, limit // len(device_ids))
+    
     # Collect readings from all devices
     all_readings = []
     
@@ -430,10 +436,7 @@ def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_li
             try:
                 readings_ref = db.collection('users').document(user_id).collection('devices').document(device_id).collection('readings')
                 query = readings_ref.order_by('server_timestamp', direction='DESCENDING')
-                if per_device_limit:
-                    query = query.limit(per_device_limit)
-                else:
-                    query = query.limit(limit)
+                query = query.limit(per_device_limit)  # Always use per_device_limit now
                 
                 docs = query.stream()
                 for doc in docs:
@@ -624,10 +627,11 @@ def get_sparse_historical_readings(user_id, hours=168):
             
             # SINGLE QUERY with reasonable limit, then filter to 1 per hour
             # This is much more efficient than 168 separate queries
-            # Limit: hours * 2 gives us good coverage even with gaps
+            # Limit: hours + 24 gives coverage with buffer for small gaps
+            # (hours * 2 was overkill and wasted reads)
             query = readings_ref.where('server_timestamp', '>=', start_time)\
                                .order_by('server_timestamp')\
-                               .limit(hours * 2)  # ~336 max reads per device
+                               .limit(hours + 24)  # ~192 max reads per device for 168 hours
             
             docs = list(query.stream())
             print(f"Historical: Queried {len(docs)} docs for device {device_id}")
