@@ -894,6 +894,160 @@ def organize_readings_by_device(readings):
     return readings_by_device
 
 
+def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24, limit_per_device=50):
+    """
+    Prepare user's device data for Gemini analysis FROM CACHE (not database).
+    This function uses cached data from local storage instead of querying Firestore.
+    
+    Args:
+        cached_data: Cached data dictionary from readings_cache.get()
+        user_id: Firebase user ID
+        time_range_hours: Number of hours of data to include (default: 24)
+        limit_per_device: Maximum readings per device to include (default: 50)
+        
+    Returns:
+        dict: Formatted data structure ready for Gemini analysis (same format as prepare_data_for_gemini)
+    """
+    from datetime import datetime, timedelta
+    
+    devices = cached_data.get('devices', [])
+    readings_by_device = cached_data.get('readings_by_device', {})
+    
+    if not devices:
+        return {
+            "user_id": user_id,
+            "device_count": 0,
+            "devices": [],
+            "overall_summary": {
+                "total_readings": 0,
+                "time_range": f"last_{time_range_hours}_hours"
+            }
+        }
+    
+    # Filter readings by time range and limit
+    cutoff_time = datetime.utcnow() - timedelta(hours=time_range_hours)
+    
+    # Build formatted data structure (same format as prepare_data_for_gemini)
+    formatted_devices = []
+    all_temperatures = []
+    all_humidities = []
+    all_soil_moistures = []
+    all_lights = []
+    all_uv_lights = []
+    
+    for device in devices:
+        device_id = device['device_id']
+        device_readings = readings_by_device.get(device_id, [])
+        
+        # Filter by time range and limit
+        filtered_readings = []
+        for reading in device_readings:
+            # Check timestamp
+            reading_time = reading.get('server_timestamp') or reading.get('timestamp')
+            if reading_time:
+                if isinstance(reading_time, str):
+                    try:
+                        reading_time = datetime.fromisoformat(reading_time.replace('Z', '+00:00'))
+                    except:
+                        continue
+                if reading_time < cutoff_time:
+                    continue
+            filtered_readings.append(reading)
+            if len(filtered_readings) >= limit_per_device:
+                break
+        
+        if len(filtered_readings) == 0:
+            continue
+        
+        # Calculate summary statistics (same as prepare_data_for_gemini)
+        temperatures = [r.get('temperature') for r in filtered_readings if r.get('temperature') is not None]
+        humidities = [r.get('humidity') for r in filtered_readings if r.get('humidity') is not None]
+        soil_moistures = [r.get('soil_moisture') for r in filtered_readings if r.get('soil_moisture') is not None]
+        lights = [r.get('light') for r in filtered_readings if r.get('light') is not None]
+        
+        # UV light - check both top-level field and raw_json
+        uv_lights = []
+        for r in filtered_readings:
+            if r.get('uv_light') is not None:
+                uv_lights.append(r.get('uv_light'))
+            elif r.get('raw_json') and r.get('raw_json').get('uv_light') is not None:
+                uv_lights.append(r.get('raw_json').get('uv_light'))
+        
+        # Calculate averages
+        avg_temp = sum(temperatures) / len(temperatures) if temperatures else None
+        avg_humidity = sum(humidities) / len(humidities) if humidities else None
+        avg_soil = sum(soil_moistures) / len(soil_moistures) if soil_moistures else None
+        avg_light = sum(lights) / len(lights) if lights else None
+        avg_uv = sum(uv_lights) / len(uv_lights) if uv_lights else None
+        
+        # Collect for overall summary
+        all_temperatures.extend(temperatures)
+        all_humidities.extend(humidities)
+        all_soil_moistures.extend(soil_moistures)
+        all_lights.extend(lights)
+        all_uv_lights.extend(uv_lights)
+        
+        # Prepare device data (same format as prepare_data_for_gemini)
+        clean_readings = []
+        for reading in filtered_readings:
+            uv_value = reading.get('uv_light')
+            if uv_value is None and reading.get('raw_json'):
+                uv_value = reading.get('raw_json').get('uv_light')
+            
+            clean_reading = {
+                'timestamp': reading.get('timestamp') or reading.get('server_timestamp'),
+                'temperature': reading.get('temperature'),
+                'humidity': reading.get('humidity'),
+                'light': reading.get('light'),
+                'soil_moisture': reading.get('soil_moisture'),
+                'uv_light': uv_value
+            }
+            clean_reading = {k: v for k, v in clean_reading.items() if v is not None}
+            clean_readings.append(clean_reading)
+        
+        device_data = {
+            'device_id': device_id,
+            'name': device.get('name', device_id),
+            'last_seen': device.get('last_seen'),
+            'recent_readings': clean_readings,
+            'summary': {
+                'reading_count': len(filtered_readings),
+                'avg_temperature': round(avg_temp, 2) if avg_temp else None,
+                'avg_humidity': round(avg_humidity, 2) if avg_humidity else None,
+                'avg_light': round(avg_light, 0) if avg_light else None,
+                'avg_soil_moisture': round(avg_soil, 2) if avg_soil else None,
+                'avg_uv_light': round(avg_uv, 2) if avg_uv else None,
+                'min_temperature': round(min(temperatures), 2) if temperatures else None,
+                'max_temperature': round(max(temperatures), 2) if temperatures else None,
+                'min_humidity': round(min(humidities), 2) if humidities else None,
+                'max_humidity': round(max(humidities), 2) if humidities else None,
+                'min_soil_moisture': round(min(soil_moistures), 2) if soil_moistures else None,
+                'max_soil_moisture': round(max(soil_moistures), 2) if soil_moistures else None,
+                'min_uv_light': round(min(uv_lights), 2) if uv_lights else None,
+                'max_uv_light': round(max(uv_lights), 2) if uv_lights else None
+            }
+        }
+        formatted_devices.append(device_data)
+    
+    # Overall summary
+    overall_summary = {
+        'total_readings': sum(len(d.get('recent_readings', [])) for d in formatted_devices),
+        'time_range': f'last_{time_range_hours}_hours',
+        'avg_temperature': round(sum(all_temperatures) / len(all_temperatures), 2) if all_temperatures else None,
+        'avg_humidity': round(sum(all_humidities) / len(all_humidities), 2) if all_humidities else None,
+        'avg_soil_moisture': round(sum(all_soil_moistures) / len(all_soil_moistures), 2) if all_soil_moistures else None,
+        'avg_light': round(sum(all_lights) / len(all_lights), 0) if all_lights else None,
+        'avg_uv_light': round(sum(all_uv_lights) / len(all_uv_lights), 2) if all_uv_lights else None
+    }
+    
+    return {
+        'user_id': user_id,
+        'device_count': len(formatted_devices),
+        'devices': formatted_devices,
+        'overall_summary': overall_summary
+    }
+
+
 @bp.route('/user_data/historical', methods=['GET'])
 @require_auth
 def get_historical_data():
@@ -1031,14 +1185,29 @@ def get_user_advice():
         except ValueError:
             limit_per_device = 50
         
-        # Prepare data for Gemini
-        formatted_data = prepare_data_for_gemini(
-            user_id,
-            time_range_hours=time_range_hours,
-            limit_per_device=limit_per_device
-        )
+        # IMPORTANT: Check cache first (local cache/storage), NOT database
+        formatted_data = None
+        cached_data = readings_cache.get(user_id)
         
-        # Get advice from Gemini (placeholder - groupmate will implement)
+        if cached_data:
+            # Use cached data (from local cache/storage, not database)
+            print(f"[Cache] Using cached data for Gemini advice (user: {user_id})")
+            formatted_data = prepare_data_for_gemini_from_cache(
+                cached_data,
+                user_id,
+                time_range_hours=time_range_hours,
+                limit_per_device=limit_per_device
+            )
+        else:
+            # Cache miss - fall back to database (but this should be rare)
+            print(f"[Cache] Cache miss - fetching from database for Gemini advice (user: {user_id})")
+            formatted_data = prepare_data_for_gemini(
+                user_id,
+                time_range_hours=time_range_hours,
+                limit_per_device=limit_per_device
+            )
+        
+        # Get advice from Gemini
         advice = get_gemini_advice(formatted_data)
         
         return jsonify({
