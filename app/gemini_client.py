@@ -12,6 +12,7 @@ Supports two output formats:
 import os
 import json
 import time
+import re
 import argparse
 import google.generativeai as genai
 import google.api_core.exceptions
@@ -32,22 +33,52 @@ try:
     
     genai.configure(api_key=api_key)
     
-    # Find a suitable model dynamically, prioritizing Flash models
-    model_name = None
-    flash_model = None
-    pro_model = None
+    # Find a suitable model dynamically, prioritizing latest Flash models, then latest Pro models
+    def extract_version(model_name):
+        """Extract version number from model name (e.g., 'gemini-2.5-flash-latest' -> 2.5)"""
+        match = re.search(r'gemini-(\d+)\.(\d+)', model_name)
+        if match:
+            major, minor = int(match.group(1)), int(match.group(2))
+            return (major, minor)
+        # Fallback: try single digit version (e.g., 'gemini-1-flash')
+        match = re.search(r'gemini-(\d+)', model_name)
+        if match:
+            return (int(match.group(1)), 0)
+        return (0, 0)  # Default for models without version
+    
+    flash_models = []
+    pro_models = []
+    other_models = []
     
     for m in genai.list_models():
         if 'generateContent' in m.supported_generation_methods:
-            if 'gemini-1.5-flash-latest' in m.name:
-                flash_model = m.name
-                break
-            elif 'flash' in m.name and not flash_model:
-                flash_model = m.name
-            elif 'pro' in m.name and not pro_model:
-                pro_model = m.name
+            model_name = m.name
+            if 'flash' in model_name.lower():
+                flash_models.append(model_name)
+            elif 'pro' in model_name.lower():
+                pro_models.append(model_name)
+            else:
+                other_models.append(model_name)
     
-    model_name = flash_model if flash_model else pro_model
+    # Sort models by version (latest first), then by name (prefer 'latest' over 'exp')
+    def sort_key(name):
+        version = extract_version(name)
+        # Prefer 'latest' over 'exp' or other suffixes
+        is_latest = 'latest' in name.lower()
+        return (-version[0], -version[1], not is_latest, name)
+    
+    flash_models.sort(key=sort_key)
+    pro_models.sort(key=sort_key)
+    other_models.sort(key=sort_key)
+    
+    # Choose latest flash model first, then latest pro, then any other model
+    model_name = None
+    if flash_models:
+        model_name = flash_models[0]
+    elif pro_models:
+        model_name = pro_models[0]
+    elif other_models:
+        model_name = other_models[0]
     
     if model_name:
         gemini_model = genai.GenerativeModel(model_name)
@@ -61,18 +92,26 @@ except Exception as e:
 
 def load_user_analysis_history(user_id):
     """
-    Load previous analysis history for a user from Firestore.
+    Load previous analysis history for a specific user.
+    
+    Analysis history is stored per user in Firestore at:
+    /users/{user_id}/analysis_history/
     
     Args:
-        user_id: Firebase user ID
+        user_id: Firebase user ID (required - must not be None)
     
     Returns:
-        list: Previous analyses for the user
+        list: Previous analyses for the user (last 10, ordered chronologically)
     """
+    if not user_id:
+        print(f"Warning: Cannot load analysis history - user_id is None or empty")
+        return []
+    
     try:
         db = get_firestore()
         
-        # Get last 10 analyses for this user ordered by timestamp
+        # Get last 10 analyses for THIS SPECIFIC USER ordered by timestamp
+        # Path: /users/{user_id}/analysis_history/ (per-user isolation)
         history_ref = db.collection('users').document(user_id).collection('analysis_history')
         query = history_ref.order_by('analysis_timestamp', direction='DESCENDING').limit(10)
         
@@ -100,8 +139,13 @@ def get_gemini_advice(formatted_data, output_format='api'):
     """
     Get plant care advice from Gemini AI based on user's sensor data.
     
+    NOTE: This function does NOT query cache or database for sensor data.
+    It receives already-formatted data. Cache checking happens in routes.py
+    before calling this function (cache-first, database fallback).
+    
     Args:
         formatted_data: Dictionary containing formatted device data from prepare_data_for_gemini()
+                         or prepare_data_for_gemini_from_cache() (from routes.py)
         output_format: 'api' (default) or 'analysis'
             - 'api': Returns format for routes.py (overall_advice, device_advice, insights)
             - 'analysis': Returns format for CLI/standalone use (ideal_thresholds, plant_health_score, etc.)
@@ -125,11 +169,14 @@ def get_gemini_advice(formatted_data, output_format='api'):
             "insights": []
         }
     
-    # Load previous analysis history for context
+    # Load previous analysis history for context (per-user, from Firestore)
     user_id = formatted_data.get('user_id')
     analysis_history = []
     if user_id:
+        # Load analysis history for THIS specific user only
         analysis_history = load_user_analysis_history(user_id)
+    else:
+        print(f"Warning: formatted_data missing user_id - cannot load analysis history")
     
     # Construct prompt based on output format
     if output_format == 'analysis':
@@ -171,14 +218,73 @@ def get_gemini_advice(formatted_data, output_format='api'):
                 if 'insights' not in advice:
                     advice['insights'] = []
                 
-                # Filter device_advice to only include devices that actually exist and have data
-                valid_device_ids = {d.get('device_id') for d in formatted_data.get('devices', [])}
+                # Ensure device_advice has correct device_id and matches existing devices
+                valid_devices = {d.get('device_id'): d for d in formatted_data.get('devices', [])}
+                valid_device_ids = set(valid_devices.keys())
+                
                 if advice.get('device_advice'):
-                    advice['device_advice'] = [
-                        da for da in advice['device_advice']
-                        if da.get('device_id') in valid_device_ids
-                    ]
-            
+                    # Fix device_advice entries: ensure device_id is present and correct
+                    fixed_device_advice = []
+                    for da in advice['device_advice']:
+                        device_id = da.get('device_id')
+                        device_name = da.get('device_name', '')
+                        
+                        # Try to match by device_id first
+                        if device_id and device_id in valid_device_ids:
+                            # Ensure device_name matches
+                            device = valid_devices[device_id]
+                            da['device_id'] = device_id
+                            da['device_name'] = device.get('name', device_id)
+                            fixed_device_advice.append(da)
+                        else:
+                            # Try to match by device_name if device_id is missing or invalid
+                            matched = False
+                            for dev_id, device in valid_devices.items():
+                                if device.get('name') == device_name or device_id == dev_id:
+                                    da['device_id'] = dev_id
+                                    da['device_name'] = device.get('name', dev_id)
+                                    fixed_device_advice.append(da)
+                                    matched = True
+                                    break
+                            
+                            # If still no match, skip this entry
+                            if not matched:
+                                print(f"Warning: Skipping device_advice entry - device_id '{device_id}' or name '{device_name}' not found in valid devices")
+                    
+                    advice['device_advice'] = fixed_device_advice
+                    
+                    # Ensure all devices have advice entries (add defaults for missing ones)
+                    devices_with_advice = {da.get('device_id') for da in fixed_device_advice}
+                    for device in formatted_data.get('devices', []):
+                        device_id = device.get('device_id')
+                        if device_id and device_id not in devices_with_advice:
+                            # Add default advice for this device
+                            default_advice = {
+                                "device_id": device_id,
+                                "device_name": device.get('name', device_id),
+                                "advice": f"Device is functioning normally. Continue monitoring sensor readings.",
+                                "priority": "low",
+                                "recommendations": []
+                            }
+                            fixed_device_advice.append(default_advice)
+                            print(f"Added default device_advice for device {device_id}")
+                    
+                    advice['device_advice'] = fixed_device_advice
+                else:
+                    # No device_advice at all - create default entries for all devices
+                    advice['device_advice'] = []
+                    for device in formatted_data.get('devices', []):
+                        device_id = device.get('device_id')
+                        if device_id:
+                            default_advice = {
+                                "device_id": device_id,
+                                "device_name": device.get('name', device_id),
+                                "advice": f"Device is functioning normally. Continue monitoring sensor readings.",
+                                "priority": "low",
+                                "recommendations": []
+                            }
+                            advice['device_advice'].append(default_advice)
+                    
             return advice
             
         except google.api_core.exceptions.ResourceExhausted as e:
@@ -269,7 +375,7 @@ def get_default_advice(formatted_data, output_format='api'):
 def construct_prompt(formatted_data, analysis_history=None):
     """
     Construct a prompt for Gemini based on formatted sensor data.
-    Uses a comprehensive prompt style for consistency.
+    Uses a concise, direct style for actionable advice.
     
     Args:
         formatted_data: The formatted data dictionary from prepare_data_for_gemini()
@@ -282,79 +388,85 @@ def construct_prompt(formatted_data, analysis_history=None):
     devices = formatted_data.get('devices', [])
     overall_summary = formatted_data.get('overall_summary', {})
     
-    # Build device information section
-    device_info_section = f"""
-    Device Information:
-    - Number of devices: {device_count}
-    - Total readings analyzed: {overall_summary.get('total_readings', 0)}
-    - Time range: {overall_summary.get('time_range', 'unknown')}
-    - Device names: {', '.join([d.get('name', d.get('device_id', 'unknown')) for d in devices])}
-    """
-    
-    # Build device details section
+    # Build concise device details section with descriptions
     device_details_section = ""
-    for device in devices:
-        device_name = device.get('name', device.get('device_id', 'unknown'))
+    for idx, device in enumerate(devices, 1):
+        device_id = device.get('device_id', 'unknown')
+        device_name = device.get('name', device_id)
+        device_description = device.get('description') or device.get('plant_description') or device.get('plant_type') or "Houseplant"
         summary = device.get('summary', {})
         recent_readings = device.get('recent_readings', [])
         
+        # Get latest reading
+        latest = recent_readings[-1] if recent_readings else {}
+        
         device_details_section += f"""
-    Device: {device_name} ({device.get('device_id', 'unknown')})
-    - Recent readings count: {len(recent_readings)}
-    - Average temperature: {summary.get('avg_temperature', 'N/A')}°C (range: {summary.get('min_temperature', 'N/A')} - {summary.get('max_temperature', 'N/A')}°C)
-    - Average humidity: {summary.get('avg_humidity', 'N/A')}%
-    - Average soil moisture: {summary.get('avg_soil_moisture', 'N/A')}%
-    - Average light: {summary.get('avg_light', 'N/A')} lux
-    - Average UV Index: {summary.get('avg_uv_light', 'N/A')} (range: {summary.get('min_uv_light', 'N/A')} - {summary.get('max_uv_light', 'N/A')})
-    - Recent readings: {json.dumps(recent_readings[:10], indent=2, default=str)}  # Show first 10 readings
-    """
+{device_name} (Device ID: {device_id}, Type: {device_description})
+- Soil moisture: {latest.get('soil_moisture', summary.get('avg_soil_moisture', 'N/A'))}% (avg: {summary.get('avg_soil_moisture', 'N/A')}%)
+- Temperature: {latest.get('temperature', summary.get('avg_temperature', 'N/A'))}°C (avg: {summary.get('avg_temperature', 'N/A')}°C)
+- Humidity: {latest.get('humidity', summary.get('avg_humidity', 'N/A'))}% (avg: {summary.get('avg_humidity', 'N/A')}%)
+- UV Index: {latest.get('uv_light', summary.get('avg_uv_light', 'N/A'))} (avg: {summary.get('avg_uv_light', 'N/A')})
+"""
     
-    # Analysis history section
+    # Analysis history section (simplified)
     analysis_history_section = ""
     if analysis_history:
         analysis_history_section = f"""
-    For additional long-term context, here is a log of previous analyses for this user.
-    Use this to understand the plant's health trajectory and the effectiveness of past recommendations.
-    {json.dumps(analysis_history, indent=2, default=str)}
-    """
+Previous analysis context (from cache/local storage only):
+{json.dumps(analysis_history[-3:], indent=2, default=str)}
+"""
     
-    prompt = f"""
-    You are an expert botanist and data analyst. Based on the following sensor data from a user's plant monitoring devices, please provide a comprehensive analysis.
+    # Finite list of allowed action items (use actual device names, not "Plant X")
+    device_names_list = ", ".join([d.get('name', d.get('device_id', 'unknown')) for d in devices])
+    action_items_list = f"""
+ALLOWED ACTION ITEMS (use the EXACT device names from above: {device_names_list}):
+- "[DEVICE_NAME] needs water"
+- "You should consider moving [DEVICE_NAME] into a spot with more sunlight"
+- "You should consider moving [DEVICE_NAME] into a spot with less sunlight"
+- "You should consider moving [DEVICE_NAME] into a spot with more indirect light"
+- "You should consider moving [DEVICE_NAME] into a spot with less direct light"
+- "[DEVICE_NAME] needs more humidity"
+- "[DEVICE_NAME] needs less humidity"
+- "[DEVICE_NAME] temperature is too high"
+- "[DEVICE_NAME] temperature is too low"
+- "[DEVICE_NAME] is healthy, continue current care"
 
-    {device_info_section}
+Replace [DEVICE_NAME] with the actual device name from the list above (e.g., "{devices[0].get('name', devices[0].get('device_id', 'Device')) if devices else 'Device'} needs water").
+"""
     
-    Overall Summary:
-    - Average temperature across all devices: {overall_summary.get('avg_temperature', 'N/A')}°C
-    - Average humidity across all devices: {overall_summary.get('avg_humidity', 'N/A')}%
-    - Average soil moisture across all devices: {overall_summary.get('avg_soil_moisture', 'N/A')}%
-    - Average light across all devices: {overall_summary.get('avg_light', 'N/A')} lux
-    - Average UV Index across all devices: {overall_summary.get('avg_uv_light', 'N/A')}
-    
-    Device Details:
-    {device_details_section}
-    {analysis_history_section}
-    
-    Your primary task is to generate a comprehensive health assessment for the user's plants (like Fiddle Leaf Figs or similar houseplants).
-    Your analysis should consider:
-    - Trends from the sensor history across all devices
-    - Your own previous analysis history for this user (if provided)
-    - Any patterns or differences between devices if multiple devices are present
-    - Summary statistics and recent readings for each device
-    - UV Index readings (0-15 scale): 0-2 is Low, 3-5 is Moderate, 6-7 is High, 8-10 is Very High, 11+ is Extreme
-      Note: Most houseplants prefer indirect light and should have low UV exposure (0-3)
-    
-    Your entire response MUST be a single, raw JSON object without any markdown formatting (no ``````).
+    prompt = f"""IMPORTANT: This data comes ONLY from cache/local storage, NOT from database.
 
-    The JSON object must contain the following keys:
-    - "overall_advice": A brief summary (2-3 sentences) of the overall plant health status across all devices.
-    - "device_advice": An array of objects, one for each device, each containing:
-        - "device_id": The device identifier
-        - "device_name": The device name
-        - "advice": A brief assessment (1-2 sentences) specific to this device
-        - "priority": One of "low", "medium", "high", or "urgent" based on the severity of issues
-        - "recommendations": An array of strings with specific, actionable recommendations for this device
-    - "insights": An array of strings with key observations and patterns across all devices (2-5 insights).
-    """
+Analyze plant sensor data and provide direct, actionable advice.
+
+{device_details_section}
+{analysis_history_section}
+
+Guidelines:
+- Soil moisture: <30% = water needed, 30-60% = good, >60% = too wet
+- UV Index: 0-2 = Low (good for houseplants), 3+ = may need shade
+- Temperature: 18-24°C ideal for most houseplants
+- Humidity: 40-60% ideal
+
+{action_items_list}
+
+Respond with JSON only (no markdown):
+{{
+  "overall_advice": "1-2 sentence summary",
+  "device_advice": [
+    {{
+      "device_id": "EXACT_DEVICE_ID_FROM_ABOVE",
+      "device_name": "EXACT_DEVICE_NAME_FROM_ABOVE",
+      "advice": "1 sentence direct assessment",
+      "priority": "low|medium|high|urgent",
+      "recommendations": ["[DEVICE_NAME] needs water", "You should consider moving [DEVICE_NAME] into a spot with more sunlight", ...]
+    }}
+  ],
+  "insights": ["Brief insight 1", "Brief insight 2"]
+}}
+
+IMPORTANT: Use the EXACT device_id and device_name from the device list above. Each device_advice entry MUST match a device from the list. Replace [DEVICE_NAME] with actual device names in recommendations.
+
+Be direct and concise. ONLY use action items from the allowed list above."""
     
     return prompt
 
@@ -391,50 +503,70 @@ def construct_analysis_prompt(formatted_data, analysis_history=None):
     # Sort historical readings by timestamp
     historical_readings.sort(key=lambda x: x.get('timestamp', ''))
     
-    device_info_section = f"""
-    Device Information:
-    - Number of devices: {device_count}
-    - Total readings analyzed: {overall_summary.get('total_readings', 0)}
-    - Device names: {', '.join([d.get('name', d.get('device_id', 'unknown')) for d in devices])}
-    """
+    # Build concise device summary with descriptions
+    device_summary = ""
+    for idx, device in enumerate(devices, 1):
+        device_id = device.get('device_id', 'unknown')
+        device_name = device.get('name', device_id)
+        device_description = device.get('description') or device.get('plant_description') or device.get('plant_type') or "Houseplant"
+        summary = device.get('summary', {})
+        device_summary += f"{device_name} (Device ID: {device_id}, Type: {device_description}) - soil={summary.get('avg_soil_moisture', 'N/A')}%, temp={summary.get('avg_temperature', 'N/A')}°C, humidity={summary.get('avg_humidity', 'N/A')}%, UV={summary.get('avg_uv_light', 'N/A')}\n"
     
     analysis_history_section = ""
     if analysis_history:
         analysis_history_section = f"""
-    For additional long-term context, here is a log of your own previous analyses for this user. 
-    Use this to understand the plant's health trajectory and the effectiveness of past recommendations.
-    {json.dumps(analysis_history, indent=2, default=str)}
-    """
+Previous analyses (from cache/local storage only):
+{json.dumps(analysis_history[-3:], indent=2, default=str)}
+"""
     
-    prompt = f"""
-    You are an expert botanist and data analyst. Based on the following sensor data from a user's plant monitoring devices, please provide a comprehensive analysis.
+    # Finite list of allowed action items (use actual device names, not "Plant X")
+    device_names_list = ", ".join([d.get('name', d.get('device_id', 'unknown')) for d in devices])
+    action_items_list = f"""
+ALLOWED ACTION ITEMS (use the EXACT device names from above: {device_names_list}):
+- "[DEVICE_NAME] needs water"
+- "You should consider moving [DEVICE_NAME] into a spot with more sunlight"
+- "You should consider moving [DEVICE_NAME] into a spot with less sunlight"
+- "You should consider moving [DEVICE_NAME] into a spot with more indirect light"
+- "You should consider moving [DEVICE_NAME] into a spot with less direct light"
+- "[DEVICE_NAME] needs more humidity"
+- "[DEVICE_NAME] needs less humidity"
+- "[DEVICE_NAME] temperature is too high"
+- "[DEVICE_NAME] temperature is too low"
+- "[DEVICE_NAME] is healthy, continue current care"
 
-    {device_info_section}
+Replace [DEVICE_NAME] with the actual device name from the list above (e.g., "{devices[0].get('name', devices[0].get('device_id', 'Device')) if devices else 'Device'} needs water").
+"""
     
-    This is the most recent sensor reading (from any of the user's devices):
-    {json.dumps(latest_reading, indent=2, default=str) if latest_reading else "No recent readings available"}
+    prompt = f"""IMPORTANT: This data comes ONLY from cache/local storage, NOT from database.
 
-    For context, here is a history of sensor readings from all of the user's devices:
-    {json.dumps(historical_readings, indent=2, default=str)}
-    {analysis_history_section}
-    
-    Your primary task is to generate a comprehensive health assessment for the user's plants (like Fiddle Leaf Figs or similar houseplants).
-    Your analysis should consider:
-    - Trends from the sensor history across all devices
-    - Your own previous analysis history for this user
-    - Any patterns or differences between devices if multiple devices are present
-    - UV Index readings (0-15 scale): 0-2 is Low, 3-5 is Moderate, 6-7 is High, 8-10 is Very High, 11+ is Extreme
-      Note: Most houseplants prefer indirect light and should have low UV exposure (0-3)
-    
-    Your entire response MUST be a single, raw JSON object without any markdown formatting (no ``````).
+Analyze plant sensor data and provide direct, actionable analysis.
 
-    The JSON object must contain the following keys:
-    - "ideal_thresholds": An object with "soil_moisture_percent" (ideal range) and "soil_ph" (ideal range).
-    - "plant_health_score": A numerical score from 0 (very poor) to 10 (excellent).
-    - "status_summary": A brief, one-sentence summary of the plant's current condition.
-    - "trend_analysis": A new, brief summary (1-2 sentences) of any notable trends in the historical data across all devices.
-    - "recommendations": An array of strings with specific, actionable recommendations.
-    """
+Devices: {device_count}
+{device_summary}
+Latest reading: {json.dumps(latest_reading, indent=2, default=str) if latest_reading else "N/A"}
+Recent history: {len(historical_readings)} readings
+{analysis_history_section}
+
+Guidelines:
+- Soil moisture: <30% = water needed, 30-60% = good, >60% = too wet
+- UV Index: 0-2 = Low (good), 3+ = may need shade
+- Temperature: 18-24°C ideal
+- Humidity: 40-60% ideal
+
+{action_items_list}
+
+Respond with JSON only:
+{{
+  "ideal_thresholds": {{"soil_moisture_percent": "30-60%", "soil_ph": "6.0-7.0"}},
+  "plant_health_score": 0-10,
+  "status_summary": "1 sentence direct status",
+  "trend_analysis": "1-2 sentence trend",
+  "recommendations": ["[DEVICE_NAME] needs water", "You should consider moving [DEVICE_NAME] into a spot with more sunlight", ...]
+}}
+
+IMPORTANT: Use the EXACT device names from the device list above when referencing specific devices. Replace [DEVICE_NAME] with actual device names.
+
+Be direct and concise. ONLY use action items from the allowed list above."""
     
     return prompt
 
@@ -585,18 +717,26 @@ def save_analysis_result(analysis_result, user_id):
     """
     Save the latest analysis result to Firestore for a specific user.
     
+    Analysis history is stored per user in Firestore at:
+    /users/{user_id}/analysis_history/
+    
     Args:
         analysis_result: Analysis result dictionary
-        user_id: Firebase user ID
+        user_id: Firebase user ID (required - must not be None)
     """
+    if not user_id:
+        print(f"  -> ERROR: Cannot save analysis - user_id is None or empty")
+        return
+    
     try:
         db = get_firestore()
         
         # Add a server timestamp and user_id to the new analysis
         analysis_result['analysis_timestamp'] = firestore.SERVER_TIMESTAMP
-        analysis_result['user_id'] = user_id
+        analysis_result['user_id'] = user_id  # Store in document for data integrity
         
-        # Save to user-specific collection: /users/{user_id}/analysis_history
+        # Save to THIS SPECIFIC USER's collection: /users/{user_id}/analysis_history/
+        # This ensures complete per-user isolation of analysis history
         db.collection('users').document(user_id).collection('analysis_history').add(analysis_result)
         
         print(f"  -> Successfully saved analysis to Firestore for user '{user_id}'.")
@@ -627,6 +767,8 @@ def run_analysis(user_id, time_range_hours=24, limit_per_device=30):
     
     try:
         # Prepare data for Gemini
+        # NOTE: CLI function queries database directly (no cache check)
+        # For API calls, cache is checked in routes.py before calling get_gemini_advice()
         formatted_data = prepare_data_for_gemini(
             user_id,
             time_range_hours=time_range_hours,
