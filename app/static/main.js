@@ -688,30 +688,55 @@ async function loadUserData() {
         // Smart gap detection: determine what historical data we need
         // - If no historical data: full fetch (168 hours)
         // - If gap <= 1 hour: no fetch needed (rich data covers it, will be synced)
-        // - If gap 1-24 hours: partial fetch (only missing hours)
-        // - If gap > 24 hours: full fetch
+        // - If gap 1-48 hours: partial fetch (only missing hours)
+        // - If gap > 48 hours: full fetch
         let needsHistoricalFetch = false;
         let historicalFetchHours = CONFIG.historicalHours; // Default: full fetch
         let historicalFetchSince = null; // For partial fetch
         
-        if (!hasHistoricalInLocalStorage && !hasHistoricalInMemory && !historicalFetchCompleted && !recentlyFetchedEmpty) {
-            // No historical data at all - need full fetch
-            needsHistoricalFetch = true;
-            console.log('[Cache Check] No historical data, need full fetch');
-        }
-        
-        console.log(`[Cache Check] localStorage: ${hasHistoricalInLocalStorage ? cachedData.hourly_samples.length + ' samples' : 'empty'}, memory: ${hasHistoricalInMemory ? dataCache.hourly_samples.length + ' samples' : 'empty'}, fetchCompleted: ${historicalFetchCompleted}, cooldown: ${recentlyFetchedEmpty}, needsFetch: ${needsHistoricalFetch}`);
+        console.log(`[Cache Check] localStorage: ${hasHistoricalInLocalStorage ? cachedData.hourly_samples.length + ' samples' : 'empty'}, memory: ${hasHistoricalInMemory ? dataCache.hourly_samples.length + ' samples' : 'empty'}, fetchCompleted: ${historicalFetchCompleted}, cooldown: ${recentlyFetchedEmpty}`);
         
         // Restore cache from localStorage if available (and not already in memory)
         if (cachedData && !hasHistoricalInMemory) {
             dataCache.readings = cachedData.readings || [];
             dataCache.hourly_samples = cachedData.hourly_samples || [];
             dataCache.last_fetch_timestamp = cachedData.last_fetch_timestamp;
-            // Mark historical as complete since we loaded it from localStorage
-            if (cachedData.hourly_samples?.length > 0) {
-                historicalFetchCompleted = true;
-            }
             console.log('[Cache] Restored from localStorage');
+        }
+        
+        // Now check for gaps AFTER restoring cache
+        if (!hasHistoricalInLocalStorage && !hasHistoricalInMemory && !historicalFetchCompleted && !recentlyFetchedEmpty) {
+            // Case 1: No historical data at all - need full fetch
+            needsHistoricalFetch = true;
+            console.log('[Gap Check] No historical data, need full fetch');
+        } else if ((hasHistoricalInLocalStorage || hasHistoricalInMemory) && !historicalFetchCompleted) {
+            // Case 2-4: We have SOME historical data - check for gaps
+            const latestSampleTime = getLatestHourlySampleTime();
+            const hoursSinceLatest = latestSampleTime 
+                ? (Date.now() - latestSampleTime.getTime()) / (60 * 60 * 1000)
+                : Infinity;
+            
+            console.log(`[Gap Check] Latest sample: ${latestSampleTime?.toISOString() || 'none'}, gap: ${hoursSinceLatest.toFixed(1)} hours`);
+            
+            if (hoursSinceLatest <= 1) {
+                // Gap <= 1 hour: syncHourlySamplesFromRichData() will handle it
+                console.log('[Gap Check] Gap <= 1 hour, sync will fill from rich data (0 DB reads)');
+                historicalFetchCompleted = true;
+            } else if (hoursSinceLatest <= 48) {
+                // Gap of 1-48 hours: partial fetch to fill
+                needsHistoricalFetch = true;
+                historicalFetchSince = latestSampleTime.toISOString();
+                historicalFetchHours = Math.ceil(hoursSinceLatest) + 1; // Add buffer
+                console.log(`[Gap Check] Filling ${hoursSinceLatest.toFixed(1)}-hour gap with partial fetch since ${historicalFetchSince}`);
+            } else {
+                // Gap > 48 hours: full refetch (data is too stale)
+                needsHistoricalFetch = true;
+                historicalFetchSince = null; // Full fetch
+                console.log(`[Gap Check] Gap too large (${hoursSinceLatest.toFixed(1)}h), doing full refetch`);
+            }
+        } else {
+            // Already fetched this session, just use cached data
+            console.log('[Gap Check] Historical fetch already completed this session');
         }
         
         // Fetch devices and recent data
