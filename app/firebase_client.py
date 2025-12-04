@@ -719,9 +719,9 @@ def get_recent_and_historic_readings(user_id, recent_limit=120, historic_limit=1
                         total_seconds = time_range.total_seconds()
                         
                         # We want historic_limit samples.
-                        # Step size in seconds.
-                        # User requested up to 120 historic points.
-                        # 4 devices * 120 = 480 reads. This is acceptable for a one-time load.
+                        # Historic data is fetched ONCE on initial load and never refetched
+                        # 120 samples per device for good trend visualization
+                        # This is acceptable as a one-time cost
                         
                         target_samples = min(historic_limit, 120) 
                         step_seconds = total_seconds / target_samples
@@ -778,6 +778,71 @@ def get_recent_and_historic_readings(user_id, recent_limit=120, historic_limit=1
         'recent': recent_readings,
         'historic': historic_readings
     }
+
+
+def get_incremental_recent_readings(user_id, since_timestamp):
+    """
+    Get only NEW recent readings since a timestamp.
+    This is used for incremental updates to avoid refetching all 120 readings.
+    
+    Args:
+        user_id: Firebase user ID
+        since_timestamp: ISO timestamp string - only fetch readings after this
+        
+    Returns:
+        list: New readings since the timestamp
+    """
+    db = get_firestore()
+    
+    # Get user's devices
+    user_devices = get_user_devices(user_id)
+    if not user_devices:
+        return []
+    
+    # Parse the since timestamp
+    try:
+        since_time = datetime.fromisoformat(since_timestamp.replace('Z', '+00:00'))
+    except:
+        print(f"Error parsing since_timestamp: {since_timestamp}")
+        return []
+    
+    new_readings = []
+    
+    for device in user_devices:
+        device_id = device['device_id']
+        device_name = device.get('name', device_id)
+        
+        try:
+            readings_ref = db.collection('users').document(user_id)\
+                            .collection('devices').document(device_id)\
+                            .collection('readings')
+            
+            # Get readings newer than since_timestamp
+            query = readings_ref.where('server_timestamp', '>', since_time)\
+                                .order_by('server_timestamp', direction='DESCENDING')\
+                                .limit(100)  # Cap to prevent huge fetches
+            
+            docs = list(query.stream())
+            
+            for doc in docs:
+                reading = doc.to_dict()
+                reading['id'] = doc.id
+                reading['device_id'] = device_id
+                reading['device_name'] = device_name
+                
+                if 'server_timestamp' in reading and hasattr(reading['server_timestamp'], 'isoformat'):
+                    reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                
+                new_readings.append(reading)
+                
+        except Exception as e:
+            print(f"Error fetching incremental readings for device {device_id}: {e}")
+            continue
+    
+    # Sort by timestamp (newest first)
+    new_readings.sort(key=lambda r: r.get('server_timestamp') or r.get('timestamp') or '', reverse=True)
+    
+    return new_readings
 
 
 def get_sparse_historical_readings(user_id, hours=168, since_timestamp=None):

@@ -20,7 +20,8 @@ from app.firebase_client import (
     get_user_device_readings_since,
     write_reading,
     prepare_data_for_gemini,
-    get_recent_and_historic_readings
+    get_recent_and_historic_readings,
+    get_incremental_recent_readings
 )
 from app.gemini_client import get_gemini_advice
 from app.cache import readings_cache
@@ -791,74 +792,44 @@ def delete_device(device_id):
 def get_user_data():
     """
     Get sensor readings from all devices belonging to the authenticated user.
-    Returns both 'recent' (high res) and 'historic' (sampled) data.
+    
+    Two modes:
+    1. Initial load (no query params): Returns both recent (120) and historic (120) data
+    2. Incremental update (with since= param): Returns only NEW recent readings since timestamp
+    
+    Query params:
+        since: ISO timestamp - if provided, only fetch NEW recent readings after this time
+               and do NOT refetch historic data
     
     Requires Authorization header: "Bearer <firebase_id_token>"
     """
     try:
         user_id = g.user['uid']
+        since_timestamp = request.args.get('since')
         
-        # Check cache first
-        cached_data = readings_cache.get(user_id)
-        
-        if cached_data:
-            # Cache Hit
-            readings_by_device = cached_data.get('readings_by_device', {})
-            recent_all = []
-            historic_all = []
-            
-            for device_id, data in readings_by_device.items():
-                if isinstance(data, dict):
-                    recent_all.extend(data.get('recent', []))
-                    historic_all.extend(data.get('historic', []))
-                else:
-                    # Legacy fallback (treat as recent)
-                    recent_all.extend(data)
-            
-            # Sort by timestamp (newest first)
-            recent_all.sort(key=lambda r: r.get('server_timestamp') or r.get('timestamp') or '', reverse=True)
-            historic_all.sort(key=lambda r: r.get('server_timestamp') or r.get('timestamp') or '', reverse=True)
+        # INCREMENTAL MODE: Client already has data, just fetch new readings
+        if since_timestamp:
+            print(f"[Incremental] Fetching new readings since {since_timestamp}")
+            new_readings = get_incremental_recent_readings(user_id, since_timestamp)
             
             return jsonify({
                 "success": True,
                 "user_id": user_id,
-                "cached": True,
+                "mode": "incremental",
                 "data": {
-                    "recent": recent_all,
-                    "historic": historic_all
+                    "recent": new_readings,
+                    "historic": []  # Never refetch historic
                 }
             }), 200
         
-        # Cache Miss - Fetch from Firestore
-        # Fetch 120 recent + 120 historic sampled
+        # INITIAL LOAD MODE: Fetch both recent and historic
+        print(f"[Initial Load] Fetching full recent + historic data")
         data_modes = get_recent_and_historic_readings(user_id, recent_limit=120, historic_limit=120)
-        
-        # Populate Cache
-        # Organize by device for cache structure: { device_id: { 'recent': [], 'historic': [] } }
-        readings_by_device = {}
-        
-        # Helper to add to dict
-        def add_to_device_group(readings, key):
-            for r in readings:
-                did = r.get('device_id')
-                if not did: continue
-                if did not in readings_by_device:
-                    readings_by_device[did] = {'recent': [], 'historic': []}
-                readings_by_device[did][key].append(r)
-        
-        add_to_device_group(data_modes['recent'], 'recent')
-        add_to_device_group(data_modes['historic'], 'historic')
-        
-        # Extract devices info
-        all_readings = data_modes['recent'] + data_modes['historic']
-        devices = extract_devices_from_readings(all_readings)
-        
-        readings_cache.set(user_id, devices, readings_by_device)
         
         return jsonify({
             "success": True,
             "user_id": user_id,
-            "cached": False,
+            "mode": "initial",
             "data": data_modes
         }), 200
         

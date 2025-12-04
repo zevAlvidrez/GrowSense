@@ -6,11 +6,11 @@
 // Configuration
 const CONFIG = {
     apiBaseUrl: window.location.origin,
-    autoRefreshInterval: 60000, // 60 seconds
+    autoRefreshInterval: 60000, // 60 seconds - only fetches NEW readings incrementally
     chartMaxPoints: 120, // Max points on any chart
     maxDevices: 4, // Maximum devices to display
     recentReadingsLimit: 120, // High-res readings to keep
-    historicReadingsLimit: 120, // Historic readings to keep
+    historicReadingsLimit: 120, // Historic readings - fetched ONCE and never refetched
 };
 
 // localStorage cache key prefix
@@ -301,19 +301,30 @@ async function fetchUserDevices() {
     }
 }
 
-async function fetchUserData() {
+async function fetchUserData(incrementalOnly = false) {
     try {
         const headers = await getAuthHeaders();
         
-        // Fetch recent and historic data in one go
-        const url = `${CONFIG.apiBaseUrl}/user_data`;
+        // Build URL based on fetch mode
+        let url = `${CONFIG.apiBaseUrl}/user_data`;
+        
+        // INCREMENTAL MODE: Only fetch new readings since last fetch
+        // (used for auto-refresh after initial load)
+        if (incrementalOnly && dataCache.last_fetch_timestamp) {
+            url += `?since=${encodeURIComponent(dataCache.last_fetch_timestamp)}`;
+            console.log(`[Incremental] Fetching new readings since ${dataCache.last_fetch_timestamp}`);
+        } else {
+            // INITIAL MODE: Fetch both recent and historic
+            // (only used on first load or if cache is empty)
+            console.log(`[Initial] Fetching full recent + historic data`);
+        }
         
         const response = await fetch(url, { headers: headers });
         
         if (response.status === 401) {
             if (currentUser) {
                 idToken = await currentUser.getIdToken(true);
-                return fetchUserData(); // Retry
+                return fetchUserData(incrementalOnly); // Retry with same mode
             }
             throw new Error('Authentication required');
         }
@@ -324,13 +335,55 @@ async function fetchUserData() {
         
         const data = await response.json();
         
-        // Update cache with response data
+        // Update cache based on mode
         if (data.data) {
-            dataCache.recent = data.data.recent || [];
-            dataCache.historic = data.data.historic || [];
-            dataCache.last_fetch_timestamp = new Date().toISOString();
+            if (data.mode === 'incremental') {
+                // INCREMENTAL: Merge new readings with existing recent data
+                const newReadings = data.data.recent || [];
+                if (newReadings.length > 0) {
+                    console.log(`[Incremental] Got ${newReadings.length} new readings`);
+                    
+                    // Merge and deduplicate
+                    const existingIds = new Set(dataCache.recent.map(r => r.id));
+                    const uniqueNewReadings = newReadings.filter(r => !existingIds.has(r.id));
+                    
+                    // Add to front (newest first)
+                    dataCache.recent = [...uniqueNewReadings, ...dataCache.recent];
+                    
+                    // Keep only most recent 120 per device
+                    // Group by device and limit
+                    const byDevice = {};
+                    dataCache.recent.forEach(r => {
+                        const did = r.device_id;
+                        if (!byDevice[did]) byDevice[did] = [];
+                        byDevice[did].push(r);
+                    });
+                    
+                    // Trim each device to 120 readings
+                    Object.keys(byDevice).forEach(did => {
+                        byDevice[did] = byDevice[did].slice(0, CONFIG.recentReadingsLimit);
+                    });
+                    
+                    // Flatten back
+                    dataCache.recent = Object.values(byDevice).flat();
+                    
+                    // Sort newest first
+                    dataCache.recent.sort((a, b) => {
+                        const timeA = new Date(a.server_timestamp || a.timestamp).getTime();
+                        const timeB = new Date(b.server_timestamp || b.timestamp).getTime();
+                        return timeB - timeA;
+                    });
+                }
+                // Historic is NEVER updated in incremental mode
+            } else {
+                // INITIAL: Replace all data
+                dataCache.recent = data.data.recent || [];
+                dataCache.historic = data.data.historic || [];
+                console.log(`[Initial] Loaded ${dataCache.recent.length} recent, ${dataCache.historic.length} historic`);
+            }
             
-            console.log(`Fetched data: ${dataCache.recent.length} recent, ${dataCache.historic.length} historic`);
+            // Update timestamp for next incremental fetch
+            dataCache.last_fetch_timestamp = new Date().toISOString();
         }
         
         return data;
@@ -371,7 +424,7 @@ async function fetchUserAdvice() {
 // Main Data Loading
 // ========================================
 
-async function loadUserData() {
+async function loadUserData(isRefresh = false) {
     updateStatus('Loading data...', 'loading');
     
     try {
@@ -382,37 +435,52 @@ async function loadUserData() {
         
         // Check localStorage for existing cache
         const cachedData = loadFromLocalStorage(userId);
+        const hasCache = cachedData && cachedData.recent && cachedData.recent.length > 0;
         
-        if (cachedData) {
+        if (hasCache) {
+            // Restore from cache
             dataCache.recent = cachedData.recent || [];
             dataCache.historic = cachedData.historic || [];
             dataCache.last_fetch_timestamp = cachedData.last_fetch_timestamp;
             console.log('[Cache] Restored from localStorage');
-            
-            // Render immediately with cached data
-            updateDeviceCards();
-            updateUnifiedTable();
         }
         
-        // Always fetch fresh data to ensure synchronization
-        // The API backend handles minimizing reads via its own strategy
-        const [devices, data] = await Promise.all([
-            fetchUserDevices(),
-            fetchUserData()
-        ]);
+        // Fetch devices (always needed for metadata)
+        const devices = await fetchUserDevices();
+        userDevices = devices.slice(0, CONFIG.maxDevices);
         
-        userDevices = devices.slice(0, CONFIG.maxDevices); // Limit to 4 devices
-        userData = data;
+        // If we have cached data, render it immediately BEFORE fetching new data
+        if (hasCache) {
+            console.log('[Cache] Rendering cached data immediately');
+            updateDeviceCards();
+            updateUnifiedTable();
+            const totalReadings = (dataCache.recent?.length || 0) + (dataCache.historic?.length || 0);
+            updateStatus(`✓ Loaded ${totalReadings} readings from cache (${dataCache.recent.length} recent, ${dataCache.historic.length} historic)`, 'success');
+            updateDataCount(totalReadings);
+        }
+        
+        // Determine fetch mode
+        if (hasCache) {
+            // INCREMENTAL MODE: Only fetch new readings since last timestamp
+            console.log('[Cache] Fetching new readings incrementally in background...');
+            const data = await fetchUserData(true); // incremental = true
+            userData = data;
+        } else {
+            // INITIAL MODE: Fetch both recent and historic
+            console.log('[Cache] No cached data, doing initial load');
+            const data = await fetchUserData(false); // incremental = false
+            userData = data;
+        }
         
         // Save updated cache to localStorage
         saveToLocalStorage(userId, dataCache);
         
-        // Update displays
+        // Update displays (again if hasCache, or first time if no cache)
         updateDeviceCards();
         updateUnifiedTable();
         
         const totalReadings = (dataCache.recent?.length || 0) + (dataCache.historic?.length || 0);
-        updateStatus(`✓ Loaded ${totalReadings} readings`, 'success');
+        updateStatus(`✓ Loaded ${totalReadings} readings (${dataCache.recent.length} recent, ${dataCache.historic.length} historic)`, 'success');
         updateDataCount(totalReadings);
         updateLastUpdated();
         
@@ -1152,10 +1220,10 @@ function clearAllDisplays() {
 function startAutoRefresh() {
     stopAutoRefresh();
     autoRefreshTimer = setInterval(() => {
-        console.log('Auto-refreshing data...');
-        loadUserData();
+        console.log('[Auto-refresh] Fetching new readings incrementally...');
+        loadUserData(true); // isRefresh = true, triggers incremental fetch
     }, CONFIG.autoRefreshInterval);
-    console.log(`Auto-refresh enabled (every ${CONFIG.autoRefreshInterval / 1000}s)`);
+    console.log(`Auto-refresh enabled (every ${CONFIG.autoRefreshInterval / 1000}s) - incremental updates only`);
 }
 
 function stopAutoRefresh() {

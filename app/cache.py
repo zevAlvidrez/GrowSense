@@ -182,5 +182,7 @@ class ReadingsCache:
 
 
 # Global singleton instance
-readings_cache = ReadingsCache(ttl_seconds=300, max_readings_per_device=200)
+# Very long TTL since client-side localStorage is the primary cache
+# Server cache is only for Gemini AI and device upload updates
+readings_cache = ReadingsCache(ttl_seconds=86400, max_readings_per_device=200)  # 24 hours
 
