@@ -70,10 +70,15 @@ function saveToLocalStorage(userId, cacheData) {
             cached_at: new Date().toISOString(),
             recent: cacheData.recent || [],
             historic: cacheData.historic || [],
-            last_fetch_timestamp: cacheData.last_fetch_timestamp
+            last_fetch_timestamp: cacheData.last_fetch_timestamp,
+            // Also persist device metadata (including descriptions) so we don't
+            // need to re-read them from the database except on true cold start.
+            devices: userDevices || []
         };
         localStorage.setItem(key, JSON.stringify(toSave));
-        console.log(`Saved cache for user ${userId}: ${toSave.recent.length} recent, ${toSave.historic.length} historic`);
+        console.log(
+            `Saved cache for user ${userId}: ${toSave.recent.length} recent, ${toSave.historic.length} historic, ${toSave.devices.length} devices`
+        );
     } catch (e) {
         console.error('Error saving to localStorage:', e);
         // If storage is full, try clearing old caches
@@ -438,16 +443,25 @@ async function loadUserData(isRefresh = false) {
         const hasCache = cachedData && cachedData.recent && cachedData.recent.length > 0;
         
         if (hasCache) {
-            // Restore from cache
+            // Restore data + devices from cache
             dataCache.recent = cachedData.recent || [];
             dataCache.historic = cachedData.historic || [];
             dataCache.last_fetch_timestamp = cachedData.last_fetch_timestamp;
-            console.log('[Cache] Restored from localStorage');
+            if (cachedData.devices && cachedData.devices.length > 0) {
+                userDevices = cachedData.devices;
+            }
+            console.log(
+                `[Cache] Restored from localStorage: ${dataCache.recent.length} recent, ${dataCache.historic.length} historic, ${userDevices.length} devices`
+            );
         }
         
-        // Fetch devices (always needed for metadata)
-        const devices = await fetchUserDevices();
-        userDevices = devices.slice(0, CONFIG.maxDevices);
+        // If we don't have devices in cache, fetch them once from the API.
+        // This is the ONLY time we read device descriptions from the database
+        // (cold start with no cache, or if cache somehow lacks devices).
+        if (!userDevices || userDevices.length === 0) {
+            const devices = await fetchUserDevices();
+            userDevices = devices.slice(0, CONFIG.maxDevices);
+        }
         
         // If we have cached data, render it immediately BEFORE fetching new data
         if (hasCache) {
@@ -1351,6 +1365,15 @@ function setupEventListeners() {
                 const device = userDevices.find(d => d.device_id === deviceId);
                 if (device) {
                     device.description = newDescription;
+                }
+                
+                // Persist updated descriptions into localStorage cache immediately
+                if (currentUser?.uid) {
+                    try {
+                        saveToLocalStorage(currentUser.uid, dataCache);
+                    } catch (e) {
+                        console.error('Error updating localStorage cache with new description:', e);
+                    }
                 }
                 
                 editor.style.display = 'none';
