@@ -314,11 +314,17 @@ def upload_data():
                 device_doc = user_device_ref.get()
                 if device_doc.exists:
                     device_data = device_doc.to_dict()
-                    # Update cache
+                    # Update config cache
                     _device_config_cache[device_id] = {
                         'config': device_data,
                         'timestamp': current_time
                     }
+                    
+                    # Update device metadata in readings cache (includes description)
+                    try:
+                        readings_cache.update_device_metadata(user_id, device_id, device_data)
+                    except Exception as e:
+                        print(f"Warning: Failed to update device metadata in cache: {str(e)}")
             
             response_data = {
                 "success": True,
@@ -826,6 +832,9 @@ def get_user_data():
         print(f"[Initial Load] Fetching full recent + historic data")
         data_modes = get_recent_and_historic_readings(user_id, recent_limit=120, historic_limit=120)
         
+        # Note: Server-side cache is populated by device uploads, not by user data requests
+        # This keeps database reads minimal - cache builds naturally as devices send data
+        
         return jsonify({
             "success": True,
             "user_id": user_id,
@@ -1217,18 +1226,9 @@ def get_user_advice():
                 "error": "No cached data available. Please refresh your dashboard to load data first."
             }), 400
         
-        # Ensure analysis history is in cache (fetch if missing, but not if empty list already cached)
-        if 'analysis_history' not in cached_data:
-            # Key is missing - fetch from Firestore and update cache (even if empty)
-            from app.gemini_client import load_user_analysis_history
-            analysis_history = load_user_analysis_history(user_id, limit=3)
-            # Cache the result (even if empty list) to avoid repeated queries
-            readings_cache.update_analysis_history(user_id, analysis_history)
-            cached_data['analysis_history'] = analysis_history
-            if analysis_history:
-                print(f"[Cache] Fetched and cached {len(analysis_history)} analysis history entries for user {user_id}")
-            else:
-                print(f"[Cache] Fetched analysis history for user {user_id} - no history found (cached empty list)")
+        # Use analysis history from cache only (no database queries)
+        # History will be populated when advice is generated and saved
+        analysis_history = cached_data.get('analysis_history', [])
         
         # Use cached data (cache-only, no database queries after initial fetch)
         print(f"[Cache] Using cached data for Gemini advice (user: {user_id})")

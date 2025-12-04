@@ -109,6 +109,7 @@ class ReadingsCache:
         """
         Add a single new reading to cache (called on device upload).
         This keeps the cache fresh as new data arrives.
+        Initializes cache if it doesn't exist yet.
         
         Args:
             user_id: Firebase user ID
@@ -116,16 +117,23 @@ class ReadingsCache:
             reading: Reading data dictionary
         """
         with self._lock:
+            # Initialize cache structure if it doesn't exist
             if user_id not in self._cache:
-                # No cache for this user yet - will be populated on first request
-                return
+                self._cache[user_id] = {}
             
-            # Initialize if not present
+            # Initialize metadata if it doesn't exist
+            if user_id not in self._metadata:
+                self._metadata[user_id] = {
+                    'devices': [],  # Will be populated when device metadata is available
+                    'analysis_history': [],  # Will be populated when advice is generated
+                    'cached_at': datetime.utcnow(),
+                    'ttl_expires': datetime.utcnow() + timedelta(seconds=self.ttl_seconds)
+                }
+            
+            # Initialize device readings structure if not present
             if device_id not in self._cache[user_id]:
-                # Determine structure based on other entries or default to list
-                # But safer to just ignore if we don't know structure yet
-                # Or assume list for backward compat if empty
-                self._cache[user_id][device_id] = []
+                # Use new structure: {recent: [], historic: []}
+                self._cache[user_id][device_id] = {'recent': [], 'historic': []}
             
             cached_data = self._cache[user_id][device_id]
             
@@ -137,11 +145,56 @@ class ReadingsCache:
                 cached_data['recent'].insert(0, reading)
                 cached_data['recent'] = cached_data['recent'][:self.max_readings_per_device]
             else:
-                # Legacy list structure
-                cached_data.insert(0, reading)
-                self._cache[user_id][device_id] = cached_data[:self.max_readings_per_device]
+                # Legacy list structure - convert to new structure
+                legacy_readings = cached_data[:self.max_readings_per_device]
+                self._cache[user_id][device_id] = {'recent': legacy_readings, 'historic': []}
+                # Add new reading
+                self._cache[user_id][device_id]['recent'].insert(0, reading)
+                self._cache[user_id][device_id]['recent'] = self._cache[user_id][device_id]['recent'][:self.max_readings_per_device]
             
             # Don't update cached_at timestamp - we want TTL to expire based on full refresh
+    
+    def update_device_metadata(self, user_id: str, device_id: str, device_data: Dict):
+        """
+        Update device metadata in cache (called when device uploads data).
+        This ensures device descriptions and other metadata are available for Gemini prompts.
+        
+        Args:
+            user_id: Firebase user ID
+            device_id: Device identifier
+            device_data: Device metadata dictionary (from Firestore device document)
+        """
+        with self._lock:
+            # Initialize metadata if it doesn't exist
+            if user_id not in self._metadata:
+                self._metadata[user_id] = {
+                    'devices': [],
+                    'analysis_history': [],
+                    'cached_at': datetime.utcnow(),
+                    'ttl_expires': datetime.utcnow() + timedelta(seconds=self.ttl_seconds)
+                }
+            
+            # Add device_id to device_data if not present
+            device_with_id = device_data.copy()
+            device_with_id['device_id'] = device_id
+            
+            # Update or add device in devices list
+            devices = self._metadata[user_id].get('devices', [])
+            # Check if device already exists
+            device_index = None
+            for i, dev in enumerate(devices):
+                if dev.get('device_id') == device_id:
+                    device_index = i
+                    break
+            
+            if device_index is not None:
+                # Update existing device
+                devices[device_index] = device_with_id
+            else:
+                # Add new device
+                devices.append(device_with_id)
+            
+            self._metadata[user_id]['devices'] = devices
     
     def update_analysis_history(self, user_id: str, analysis_history: List[Dict]):
         """
