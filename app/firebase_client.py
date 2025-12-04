@@ -585,7 +585,7 @@ def get_user_device_readings_since(user_id, since_timestamp, limit=100):
     return (all_readings, len(device_ids))
 
 
-def get_sparse_historical_readings(user_id, hours=168):
+def get_sparse_historical_readings(user_id, hours=168, since_timestamp=None):
     """
     Get one reading per hour for each device for the specified time range.
     Used for historical trend visualization in week/all-time views.
@@ -596,6 +596,8 @@ def get_sparse_historical_readings(user_id, hours=168):
     Args:
         user_id: Firebase user ID
         hours: Number of hours of history (default 168 = 1 week)
+        since_timestamp: Optional ISO timestamp string - only fetch readings after this time
+                        (used for partial fetches to fill gaps, reduces DB reads)
         
     Returns:
         List of readings, one per hour per device, sorted by timestamp
@@ -605,7 +607,23 @@ def get_sparse_historical_readings(user_id, hours=168):
     
     # Calculate time range
     end_time = datetime.utcnow()
-    start_time = end_time - timedelta(hours=hours)
+    
+    # If since_timestamp provided, use it as start time (partial fetch)
+    if since_timestamp:
+        try:
+            if isinstance(since_timestamp, str):
+                since_timestamp = since_timestamp.replace('Z', '+00:00')
+                start_time = datetime.fromisoformat(since_timestamp)
+                # Calculate actual hours for limit calculation
+                hours = int((end_time - start_time).total_seconds() / 3600) + 1
+                print(f"Historical: Partial fetch since {since_timestamp} ({hours} hours)")
+            else:
+                start_time = since_timestamp
+        except Exception as e:
+            print(f"Error parsing since_timestamp: {e}, falling back to hours-based")
+            start_time = end_time - timedelta(hours=hours)
+    else:
+        start_time = end_time - timedelta(hours=hours)
     
     # Get user's devices (reuse from cache if available)
     devices = get_user_devices(user_id)

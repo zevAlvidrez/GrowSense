@@ -121,6 +121,126 @@ function clearOldCaches(keepUserId) {
     }
 }
 
+// ========================================
+// Hourly Sample Sync Functions
+// ========================================
+
+function getHourKey(timestamp) {
+    /**
+     * Get hour-truncated key from timestamp for grouping.
+     * Returns ISO string truncated to hour: "2024-12-04T10:00:00"
+     */
+    const date = new Date(timestamp);
+    date.setMinutes(0, 0, 0);
+    return date.toISOString().slice(0, 19); // Remove milliseconds and timezone
+}
+
+function getLatestHourlySampleTime(deviceId = null) {
+    /**
+     * Get the timestamp of the most recent hourly sample.
+     * If deviceId provided, filters to that device.
+     * Returns Date object or null if no samples.
+     */
+    let samples = dataCache.hourly_samples || [];
+    if (deviceId) {
+        samples = samples.filter(r => r.device_id === deviceId);
+    }
+    if (samples.length === 0) return null;
+    
+    let latest = null;
+    for (const sample of samples) {
+        const ts = new Date(sample.server_timestamp || sample.timestamp);
+        if (!latest || ts > latest) {
+            latest = ts;
+        }
+    }
+    return latest;
+}
+
+function syncHourlySamplesFromRichData() {
+    /**
+     * "Graduate" readings from rich data to hourly_samples.
+     * This runs on every auto-refresh and requires ZERO database reads.
+     * 
+     * For each device:
+     * 1. Find all hours represented in rich data
+     * 2. Check if each hour already has a sample in hourly_samples
+     * 3. If not, add the first reading from that hour
+     * 4. Trim to keep only last 168 hours
+     */
+    const richData = dataCache.readings || [];
+    if (richData.length === 0) return;
+    
+    // Get unique device IDs from rich data
+    const deviceIds = [...new Set(richData.map(r => r.device_id))];
+    
+    let samplesAdded = 0;
+    
+    for (const deviceId of deviceIds) {
+        // Get existing hourly samples for this device
+        const existingHours = new Set();
+        (dataCache.hourly_samples || [])
+            .filter(r => r.device_id === deviceId)
+            .forEach(r => {
+                const hourKey = getHourKey(r.server_timestamp || r.timestamp);
+                existingHours.add(hourKey);
+            });
+        
+        // Group rich data by hour for this device
+        const richByHour = new Map();
+        richData
+            .filter(r => r.device_id === deviceId)
+            .forEach(r => {
+                const hourKey = getHourKey(r.server_timestamp || r.timestamp);
+                if (!richByHour.has(hourKey)) {
+                    richByHour.set(hourKey, []);
+                }
+                richByHour.get(hourKey).push(r);
+            });
+        
+        // For each hour in rich data, add to hourly_samples if not already there
+        for (const [hourKey, readings] of richByHour) {
+            if (!existingHours.has(hourKey)) {
+                // Sort to get the first reading of the hour
+                readings.sort((a, b) => {
+                    const tsA = new Date(a.server_timestamp || a.timestamp);
+                    const tsB = new Date(b.server_timestamp || b.timestamp);
+                    return tsA - tsB;
+                });
+                
+                // Add first reading to hourly_samples
+                const firstReading = readings[0];
+                dataCache.hourly_samples.push(firstReading);
+                existingHours.add(hourKey);
+                samplesAdded++;
+            }
+        }
+    }
+    
+    // Trim old hourly samples (keep only last 168 hours)
+    const cutoffTime = Date.now() - (CONFIG.historicalHours * 60 * 60 * 1000);
+    const beforeTrim = dataCache.hourly_samples.length;
+    dataCache.hourly_samples = dataCache.hourly_samples.filter(r => {
+        const ts = new Date(r.server_timestamp || r.timestamp).getTime();
+        return ts >= cutoffTime;
+    });
+    const trimmed = beforeTrim - dataCache.hourly_samples.length;
+    
+    if (samplesAdded > 0 || trimmed > 0) {
+        console.log(`[Hourly Sync] Added ${samplesAdded} new samples, trimmed ${trimmed} old samples (total: ${dataCache.hourly_samples.length})`);
+    }
+}
+
+function getHoursSinceLatestSample() {
+    /**
+     * Calculate hours since the latest hourly sample.
+     * Used to determine if we need to fetch missing historical data.
+     */
+    const latestTime = getLatestHourlySampleTime();
+    if (!latestTime) return Infinity;
+    return (Date.now() - latestTime.getTime()) / (60 * 60 * 1000);
+}
+
 // Table display state
 let tableDisplayLimit = 20; // How many readings currently shown in table
 const TABLE_INCREMENT = 20; // How many more to show when "Load More" clicked
@@ -379,26 +499,35 @@ async function fetchUserData() {
     }
 }
 
-async function fetchHistoricalData() {
+async function fetchHistoricalData(hours = null, since = null) {
     /**
      * Fetch sparse historical readings (one per hour) for week/all-time views.
-     * This data is cached in localStorage and only fetched once.
+     * This data is cached in localStorage and only fetched once per user.
      * 
-     * WARNING: This is expensive (~1000 Firestore reads)! Should only be called ONCE per user.
+     * Args:
+     *   hours: Number of hours to fetch (default: CONFIG.historicalHours)
+     *   since: ISO timestamp - only fetch readings after this time (for partial fetch)
+     * 
+     * WARNING: This is expensive! Should only be called ONCE per user on cold start.
      */
     try {
         const headers = await getAuthHeaders();
-        const url = `${CONFIG.apiBaseUrl}/user_data/historical?hours=${CONFIG.historicalHours}`;
+        const fetchHours = hours || CONFIG.historicalHours;
+        
+        let url = `${CONFIG.apiBaseUrl}/user_data/historical?hours=${fetchHours}`;
+        if (since) {
+            url += `&since=${encodeURIComponent(since)}`;
+        }
         
         console.warn(`⚠️ [EXPENSIVE] Fetching historical data - THIS SHOULD ONLY HAPPEN ONCE PER USER!`);
-        console.log(`Fetching historical data for past ${CONFIG.historicalHours} hours...`);
+        console.log(`Fetching historical data: ${since ? `since ${since}` : `past ${fetchHours} hours`}...`);
         
         const response = await fetch(url, { headers: headers });
         
         if (response.status === 401) {
             if (currentUser) {
                 idToken = await currentUser.getIdToken(true);
-                return fetchHistoricalData(); // Retry
+                return fetchHistoricalData(hours, since); // Retry with same params
             }
             throw new Error('Authentication required');
         }
@@ -451,6 +580,48 @@ function mergeReadings(oldReadings, newReadings) {
     // 120 per device × 4 devices = 480 max recent readings
     const maxReadings = CONFIG.recentReadingsLimit * CONFIG.maxDevices;
     return merged.slice(0, maxReadings);
+}
+
+function mergeHourlySamples(oldSamples, newSamples) {
+    /**
+     * Merge hourly samples, keeping only one sample per hour per device.
+     * Used when doing partial historical fetches to fill gaps.
+     */
+    if (!newSamples || newSamples.length === 0) {
+        return oldSamples || [];
+    }
+    if (!oldSamples || oldSamples.length === 0) {
+        return newSamples;
+    }
+    
+    // Create a map keyed by device_id + hour_key
+    const sampleMap = new Map();
+    
+    // Add old samples
+    oldSamples.forEach(sample => {
+        const hourKey = getHourKey(sample.server_timestamp || sample.timestamp);
+        const key = `${sample.device_id}_${hourKey}`;
+        sampleMap.set(key, sample);
+    });
+    
+    // Add new samples (won't overwrite existing - keep first)
+    newSamples.forEach(sample => {
+        const hourKey = getHourKey(sample.server_timestamp || sample.timestamp);
+        const key = `${sample.device_id}_${hourKey}`;
+        if (!sampleMap.has(key)) {
+            sampleMap.set(key, sample);
+        }
+    });
+    
+    // Convert back to array and sort by timestamp (oldest first for historical)
+    const merged = Array.from(sampleMap.values());
+    merged.sort((a, b) => {
+        const timeA = new Date(a.server_timestamp || a.timestamp);
+        const timeB = new Date(b.server_timestamp || b.timestamp);
+        return timeA - timeB; // Ascending order (oldest first)
+    });
+    
+    return merged;
 }
 
 async function fetchUserAdvice() {
@@ -514,8 +685,20 @@ async function loadUserData() {
             }
         }
         
-        // Need to fetch if: no data in cache AND we haven't completed a fetch for this session AND not in cooldown
-        let needsHistoricalFetch = !hasHistoricalInLocalStorage && !hasHistoricalInMemory && !historicalFetchCompleted && !recentlyFetchedEmpty;
+        // Smart gap detection: determine what historical data we need
+        // - If no historical data: full fetch (168 hours)
+        // - If gap <= 1 hour: no fetch needed (rich data covers it, will be synced)
+        // - If gap 1-24 hours: partial fetch (only missing hours)
+        // - If gap > 24 hours: full fetch
+        let needsHistoricalFetch = false;
+        let historicalFetchHours = CONFIG.historicalHours; // Default: full fetch
+        let historicalFetchSince = null; // For partial fetch
+        
+        if (!hasHistoricalInLocalStorage && !hasHistoricalInMemory && !historicalFetchCompleted && !recentlyFetchedEmpty) {
+            // No historical data at all - need full fetch
+            needsHistoricalFetch = true;
+            console.log('[Cache Check] No historical data, need full fetch');
+        }
         
         console.log(`[Cache Check] localStorage: ${hasHistoricalInLocalStorage ? cachedData.hourly_samples.length + ' samples' : 'empty'}, memory: ${hasHistoricalInMemory ? dataCache.hourly_samples.length + ' samples' : 'empty'}, fetchCompleted: ${historicalFetchCompleted}, cooldown: ${recentlyFetchedEmpty}, needsFetch: ${needsHistoricalFetch}`);
         
@@ -550,13 +733,21 @@ async function loadUserData() {
                 historicalFetchJustAttempted = true;
                 console.log('[Historical] Fetching historical data (this should only happen ONCE per user)...');
                 try {
-                    const historicalReadings = await fetchHistoricalData();
-                    dataCache.hourly_samples = historicalReadings;
+                    const historicalReadings = await fetchHistoricalData(historicalFetchHours, historicalFetchSince);
+                    if (historicalFetchSince) {
+                        // Partial fetch - merge with existing
+                        dataCache.hourly_samples = mergeHourlySamples(dataCache.hourly_samples, historicalReadings);
+                    } else {
+                        // Full fetch - replace
+                        dataCache.hourly_samples = historicalReadings;
+                    }
                     console.log(`[Historical] Loaded ${historicalReadings.length} hourly samples`);
                 } catch (histError) {
                     console.error('[Historical] Error:', histError);
                     // Continue without historical data
-                    dataCache.hourly_samples = [];
+                    if (!dataCache.hourly_samples) {
+                        dataCache.hourly_samples = [];
+                    }
                 } finally {
                     historicalFetchInProgress = false;
                     historicalFetchCompleted = true; // Mark complete even if 0 results
@@ -565,6 +756,11 @@ async function loadUserData() {
         } else {
             console.log(`[Historical] Using cached data (${dataCache.hourly_samples?.length || 0} samples)`);
         }
+        
+        // Sync hourly samples from rich data (ZERO database reads!)
+        // This "graduates" readings from rich data to hourly_samples for any hours
+        // that are in rich data but not yet in hourly_samples
+        syncHourlySamplesFromRichData();
         
         // Save updated cache to localStorage
         // Pass true if we just attempted a historical fetch (for cooldown tracking)
@@ -683,9 +879,9 @@ function createDeviceCard(device, latestReading, readings) {
     
     // Preserve existing time range for this device (don't reset on refresh)
     const existingTimeRange = deviceTimeRanges[device.device_id];
-    // Only initialize to null if truly not set (undefined)
+    // Only initialize if truly not set (undefined) - default to 1 hour
     if (existingTimeRange === undefined) {
-        deviceTimeRanges[device.device_id] = null; // null = all time
+        deviceTimeRanges[device.device_id] = 3600000; // 1 hour (in ms) as default
     }
     
     // Determine current sampling rate selection
@@ -768,7 +964,8 @@ function createDeviceCard(device, latestReading, readings) {
     const timeRangeSelect = card.querySelector(`#time-range-${device.device_id}`);
     if (timeRangeSelect) {
         const currentRange = deviceTimeRanges[device.device_id];
-        timeRangeSelect.value = currentRange === null || currentRange === undefined ? 'null' : String(currentRange);
+        // null means "All time", undefined shouldn't happen (we set default above)
+        timeRangeSelect.value = currentRange === null ? 'null' : String(currentRange);
     }
     
     return card;

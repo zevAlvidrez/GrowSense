@@ -1084,6 +1084,7 @@ def get_historical_data():
     
     Query parameters:
         hours: Number of hours of history to fetch (default: 168 = 1 week, max: 336 = 2 weeks)
+        since: ISO timestamp - only fetch readings after this time (for partial/gap-fill fetches)
     
     Returns:
         JSON with one reading per hour per device (first reading of each hour)
@@ -1098,14 +1099,18 @@ def get_historical_data():
         except ValueError:
             hours = 168
         
+        # Parse since parameter (for partial fetches to fill gaps)
+        since_timestamp = request.args.get('since')
+        
         # Get sparse historical readings
         from app.firebase_client import get_sparse_historical_readings
-        readings = get_sparse_historical_readings(user_id, hours)
+        readings = get_sparse_historical_readings(user_id, hours, since_timestamp=since_timestamp)
         
         return jsonify({
             "success": True,
             "user_id": user_id,
             "hours_requested": hours,
+            "since": since_timestamp,
             "total_readings": len(readings),
             "readings": readings
         }), 200
