@@ -865,15 +865,22 @@ function updateDeviceCards() {
     // Preserve open description editor state before clearing
     // This prevents losing unsaved text during auto-refresh
     let openEditorState = null;
-    const openEditor = grid.querySelector('.description-editor');
-    if (openEditor && openEditor.style.display !== 'none') {
-        const section = openEditor.closest('.device-description-section');
-        const textarea = openEditor.querySelector('.description-textarea');
-        if (section && textarea) {
-            openEditorState = {
-                deviceId: section.dataset.deviceId,
-                unsavedText: textarea.value
-            };
+    // Find ALL editors and check which one is open (display !== 'none')
+    const allEditors = grid.querySelectorAll('.description-editor');
+    for (const editor of allEditors) {
+        // Check if this editor is visible (display is 'block' or empty string after being shown)
+        const isVisible = editor.style.display === 'block';
+        if (isVisible) {
+            const section = editor.closest('.device-description-section');
+            const textarea = editor.querySelector('.description-textarea');
+            if (section && textarea) {
+                openEditorState = {
+                    deviceId: section.dataset.deviceId,
+                    unsavedText: textarea.value
+                };
+                console.log('[Description] Preserving editor state for device:', openEditorState.deviceId);
+            }
+            break; // Only one editor can be open at a time
         }
     }
     
@@ -918,6 +925,7 @@ function updateDeviceCards() {
                 editor.style.display = 'block';
                 toggle.style.display = 'none';
                 updateCharCount(section);
+                console.log('[Description] Restored editor state for device:', openEditorState.deviceId);
             }
         }
     }
