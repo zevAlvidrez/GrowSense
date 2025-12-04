@@ -376,6 +376,36 @@ def update_device_config(user_id, device_id, config_data):
     return True
 
 
+def update_device_description(user_id, device_id, description):
+    """
+    Update device description field.
+    
+    Args:
+        user_id: Firebase user ID
+        device_id: Device identifier
+        description: Description text (max 250 words / ~1250 chars)
+        
+    Returns:
+        bool: True if successful, False if device not found or validation fails
+    """
+    # Validate description length (250 words max, ~1250 chars)
+    if description and len(description) > 1500:
+        return False
+    
+    db = get_firestore()
+    
+    # Reference to user's device document
+    user_device_ref = db.collection('users').document(user_id).collection('devices').document(device_id)
+    
+    # Update description field (no existence check to save 1 read - will fail if not exists)
+    try:
+        user_device_ref.update({'description': description or ''})
+        return True
+    except Exception as e:
+        print(f"Error updating device description: {e}")
+        return False
+
+
 def get_user_device_readings(user_id, device_ids=None, limit=None, per_device_limit=None):
     """
     Get sensor readings from user's devices.

@@ -983,6 +983,23 @@ function createDeviceCard(device, latestReading, readings) {
             <canvas id="chart-secondary-${device.device_id}"></canvas>
         </div>
         <div id="device-advice-${device.device_id}" class="device-advice" style="display: none;"></div>
+        <div class="device-description-section" data-device-id="${device.device_id}">
+            <span class="description-toggle">Device description</span>
+            <div class="description-editor" style="display: none;">
+                <textarea 
+                    class="description-textarea" 
+                    maxlength="1500" 
+                    placeholder="Add a description for this device (max 250 words)..."
+                >${device.description || ''}</textarea>
+                <div class="description-char-count">
+                    <span class="char-count">${(device.description || '').length}</span>/1500
+                </div>
+                <div class="description-buttons">
+                    <button class="description-save-btn">Save</button>
+                    <button class="description-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        </div>
     `;
     
     // Set dropdown value programmatically (more reliable than selected attribute in innerHTML)
@@ -1732,6 +1749,113 @@ function setupEventListeners() {
             }
         }
     });
+    
+    // Device description event handlers (delegated for dynamic elements)
+    document.addEventListener('click', async (e) => {
+        // Toggle description editor
+        if (e.target.classList.contains('description-toggle')) {
+            const section = e.target.closest('.device-description-section');
+            const editor = section.querySelector('.description-editor');
+            const textarea = section.querySelector('.description-textarea');
+            const deviceId = section.dataset.deviceId;
+            
+            // Get current description from device data
+            const device = userDevices.find(d => d.device_id === deviceId);
+            textarea.value = device?.description || '';
+            updateCharCount(section);
+            
+            // Show editor
+            editor.style.display = 'block';
+            e.target.style.display = 'none';
+            textarea.focus();
+        }
+        
+        // Save description
+        if (e.target.classList.contains('description-save-btn')) {
+            const section = e.target.closest('.device-description-section');
+            const editor = section.querySelector('.description-editor');
+            const toggle = section.querySelector('.description-toggle');
+            const textarea = section.querySelector('.description-textarea');
+            const deviceId = section.dataset.deviceId;
+            const newDescription = textarea.value.trim();
+            
+            // Disable buttons while saving
+            const saveBtn = e.target;
+            const cancelBtn = section.querySelector('.description-cancel-btn');
+            saveBtn.disabled = true;
+            cancelBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
+            
+            try {
+                const headers = await getAuthHeaders();
+                const response = await fetch(`${CONFIG.apiBaseUrl}/devices/${deviceId}/description`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({ description: newDescription })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to save description');
+                }
+                
+                // Update local cache
+                const device = userDevices.find(d => d.device_id === deviceId);
+                if (device) {
+                    device.description = newDescription;
+                }
+                
+                // Update localStorage cache
+                if (currentUser?.uid) {
+                    const cachedData = loadFromLocalStorage(currentUser.uid);
+                    if (cachedData) {
+                        // Note: device descriptions aren't stored separately in cache
+                        // They come from userDevices which is refreshed on page load
+                    }
+                }
+                
+                console.log(`[Description] Saved for device ${deviceId}`);
+                
+                // Hide editor
+                editor.style.display = 'none';
+                toggle.style.display = 'block';
+                
+            } catch (error) {
+                console.error('Error saving description:', error);
+                alert('Failed to save description. Please try again.');
+            } finally {
+                saveBtn.disabled = false;
+                cancelBtn.disabled = false;
+                saveBtn.textContent = 'Save';
+            }
+        }
+        
+        // Cancel description edit
+        if (e.target.classList.contains('description-cancel-btn')) {
+            const section = e.target.closest('.device-description-section');
+            const editor = section.querySelector('.description-editor');
+            const toggle = section.querySelector('.description-toggle');
+            
+            // Just hide editor without saving
+            editor.style.display = 'none';
+            toggle.style.display = 'block';
+        }
+    });
+    
+    // Character count update for description textarea
+    document.addEventListener('input', (e) => {
+        if (e.target.classList.contains('description-textarea')) {
+            const section = e.target.closest('.device-description-section');
+            updateCharCount(section);
+        }
+    });
+}
+
+function updateCharCount(section) {
+    const textarea = section.querySelector('.description-textarea');
+    const countSpan = section.querySelector('.char-count');
+    if (textarea && countSpan) {
+        countSpan.textContent = textarea.value.length;
+    }
 }
 
 // ========================================

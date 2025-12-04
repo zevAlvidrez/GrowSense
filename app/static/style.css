@@ -506,6 +506,110 @@ body {
 }
 
 /* ========================================
+   Device Description Section
+   ======================================== */
+
+.device-description-section {
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-sm);
+    border-top: 1px solid var(--border-color);
+}
+
+.description-toggle {
+    display: inline-block;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    padding: var(--spacing-xs) 0;
+    transition: color 0.2s ease;
+}
+
+.description-toggle:hover {
+    color: var(--primary-green);
+}
+
+.description-editor {
+    margin-top: var(--spacing-sm);
+}
+
+.description-textarea {
+    width: 100%;
+    min-height: 100px;
+    max-height: 200px;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-color);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    resize: vertical;
+    box-sizing: border-box;
+}
+
+.description-textarea:focus {
+    outline: none;
+    border-color: var(--primary-green);
+    box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+}
+
+.description-textarea::placeholder {
+    color: var(--text-secondary);
+}
+
+.description-char-count {
+    text-align: right;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: var(--spacing-xs);
+}
+
+.description-buttons {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+}
+
+.description-save-btn,
+.description-cancel-btn {
+    padding: var(--spacing-xs) var(--spacing-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+
+.description-save-btn {
+    background: var(--primary-green);
+    color: white;
+}
+
+.description-save-btn:hover {
+    background: var(--primary-green-dark);
+}
+
+.description-save-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.description-cancel-btn {
+    background: var(--border-color);
+    color: var(--text-primary);
+}
+
+.description-cancel-btn:hover {
+    background: var(--text-secondary);
+    color: white;
+}
+
+.description-cancel-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ========================================
    Controls Section
    ======================================== */
 

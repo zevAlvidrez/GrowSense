@@ -689,6 +689,62 @@ def update_config(device_id):
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
+@bp.route('/devices/<device_id>/description', methods=['POST'])
+@require_auth
+def update_description(device_id):
+    """
+    Update the description for a specific device.
+    Verifies ownership before updating.
+    
+    Requires Authorization header: "Bearer <firebase_id_token>"
+    
+    Expected JSON payload:
+    {
+        "description": "My tomato plant by the window..."
+    }
+    
+    Returns:
+        JSON confirmation
+    """
+    try:
+        user_id = g.user['uid']
+        data = request.get_json()
+        
+        if data is None:
+            return jsonify({"error": "Invalid JSON or empty body"}), 400
+        
+        description = data.get('description', '')
+        
+        # Validate description length (250 words max, ~1250 chars, with buffer)
+        if len(description) > 1500:
+            return jsonify({
+                "error": "Description too long",
+                "max_length": 1500,
+                "current_length": len(description)
+            }), 400
+        
+        # Verify device belongs to user and update
+        from app.firebase_client import update_device_description
+        success = update_device_description(user_id, device_id, description)
+        
+        if not success:
+            return jsonify({
+                "error": "Device not found or does not belong to user",
+                "device_id": device_id
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "message": "Description updated successfully",
+            "device_id": device_id,
+            "description": description
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in update_description: {str(e)}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
 @bp.route('/devices/<device_id>', methods=['DELETE'])
 @require_auth
 def delete_device(device_id):
