@@ -73,20 +73,27 @@ class ReadingsCache:
                 'cached_at': meta['cached_at']
             }
     
-    def set(self, user_id: str, devices: List[Dict], readings_by_device: Dict[str, List[Dict]]):
+    def set(self, user_id: str, devices: List[Dict], readings_by_device: Dict[str, Any]):
         """
         Cache data for a user.
         
         Args:
             user_id: Firebase user ID
             devices: List of device metadata dictionaries
-            readings_by_device: Dictionary mapping device_id to list of readings
+            readings_by_device: Dictionary mapping device_id to list of readings OR dict with recent/historic
         """
         with self._lock:
             # Limit readings per device to prevent memory bloat
             limited_readings = {}
             for device_id, readings in readings_by_device.items():
-                limited_readings[device_id] = readings[:self.max_readings_per_device]
+                if isinstance(readings, dict):
+                    # Handle new structure {recent: [], historic: []}
+                    rec = readings.get('recent', [])[:self.max_readings_per_device]
+                    hist = readings.get('historic', [])[:self.max_readings_per_device]
+                    limited_readings[device_id] = {'recent': rec, 'historic': hist}
+                else:
+                    # Legacy list structure
+                    limited_readings[device_id] = readings[:self.max_readings_per_device]
             
             self._cache[user_id] = limited_readings
             self._metadata[user_id] = {
@@ -110,14 +117,26 @@ class ReadingsCache:
                 # No cache for this user yet - will be populated on first request
                 return
             
+            # Initialize if not present
             if device_id not in self._cache[user_id]:
+                # Determine structure based on other entries or default to list
+                # But safer to just ignore if we don't know structure yet
+                # Or assume list for backward compat if empty
                 self._cache[user_id][device_id] = []
             
-            # Add to front (newest first)
-            self._cache[user_id][device_id].insert(0, reading)
+            cached_data = self._cache[user_id][device_id]
             
-            # Keep only recent N readings
-            self._cache[user_id][device_id] = self._cache[user_id][device_id][:self.max_readings_per_device]
+            if isinstance(cached_data, dict):
+                # New structure: add to 'recent'
+                if 'recent' not in cached_data:
+                    cached_data['recent'] = []
+                
+                cached_data['recent'].insert(0, reading)
+                cached_data['recent'] = cached_data['recent'][:self.max_readings_per_device]
+            else:
+                # Legacy list structure
+                cached_data.insert(0, reading)
+                self._cache[user_id][device_id] = cached_data[:self.max_readings_per_device]
             
             # Don't update cached_at timestamp - we want TTL to expire based on full refresh
     

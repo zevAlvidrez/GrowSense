@@ -4,6 +4,7 @@ Firebase client initialization and helper functions.
 
 import os
 import json
+from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore, storage, auth
 from firebase_admin.exceptions import FirebaseError
@@ -199,7 +200,6 @@ def register_device_to_user(user_id, device_id, api_key, name=None):
         dict: Device information
     """
     db = get_firestore()
-    from datetime import datetime
     from google.cloud.firestore_v1 import SERVER_TIMESTAMP
     
     now = datetime.utcnow()
@@ -615,114 +615,176 @@ def get_user_device_readings_since(user_id, since_timestamp, limit=100):
     return (all_readings, len(device_ids))
 
 
-def get_sparse_historical_readings(user_id, hours=168, since_timestamp=None):
+def get_recent_and_historic_readings(user_id, recent_limit=120, historic_limit=120):
     """
-    Get one reading per hour for each device for the specified time range.
-    Used for historical trend visualization in week/all-time views.
+    Get both recent and sampled historic readings for a user.
+    Minimizes database reads while providing two views of the data.
     
-    Takes the FIRST reading of each hour to minimize Firestore reads.
-    Uses SINGLE query per device with limit, then filters client-side.
+    Strategy:
+    1. Recent: Fetch last N readings per device (High Resolution)
+    2. Historic: Fetch sampled readings (Low Resolution) by estimating time steps
+       to approximate "index 60, 120, 180..."
     
     Args:
         user_id: Firebase user ID
-        hours: Number of hours of history (default 168 = 1 week)
-        since_timestamp: Optional ISO timestamp string - only fetch readings after this time
-                        (used for partial fetches to fill gaps, reduces DB reads)
+        recent_limit: Number of recent readings per device
+        historic_limit: Number of historic samples per device
         
     Returns:
-        List of readings, one per hour per device, sorted by timestamp
+        dict: {
+            'recent': [readings...],
+            'historic': [readings...]
+        }
     """
     db = get_firestore()
-    from datetime import datetime, timedelta
     
-    # Calculate time range
-    end_time = datetime.utcnow()
+    # Get user's devices
+    user_devices = get_user_devices(user_id)
+    if not user_devices:
+        return {'recent': [], 'historic': []}
+        
+    recent_readings = []
+    historic_readings = []
     
-    # If since_timestamp provided, use it as start time (partial fetch)
-    if since_timestamp:
-        try:
-            if isinstance(since_timestamp, str):
-                since_timestamp = since_timestamp.replace('Z', '+00:00')
-                start_time = datetime.fromisoformat(since_timestamp)
-                # Calculate actual hours for limit calculation
-                hours = int((end_time - start_time).total_seconds() / 3600) + 1
-                print(f"Historical: Partial fetch since {since_timestamp} ({hours} hours)")
-            else:
-                start_time = since_timestamp
-        except Exception as e:
-            print(f"Error parsing since_timestamp: {e}, falling back to hours-based")
-            start_time = end_time - timedelta(hours=hours)
-    else:
-        start_time = end_time - timedelta(hours=hours)
-    
-    # Get user's devices (reuse from cache if available)
-    devices = get_user_devices(user_id)
-    
-    if not devices:
-        return []
-    
-    all_sparse_readings = []
-    
-    for device in devices:
+    for device in user_devices:
         device_id = device['device_id']
         device_name = device.get('name', device_id)
         
+        # 1. Fetch Recent Data
+        # ====================
         try:
-            # Query readings for this device in the time range
             readings_ref = db.collection('users').document(user_id)\
                             .collection('devices').document(device_id)\
                             .collection('readings')
             
-            # SINGLE QUERY with reasonable limit, then filter to 1 per hour
-            # This is much more efficient than 168 separate queries
-            # Limit: hours + 24 gives coverage with buffer for small gaps
-            # (hours * 2 was overkill and wasted reads)
-            query = readings_ref.where('server_timestamp', '>=', start_time)\
-                               .order_by('server_timestamp')\
-                               .limit(hours + 24)  # ~192 max reads per device for 168 hours
-            
+            query = readings_ref.order_by('server_timestamp', direction='DESCENDING').limit(recent_limit)
             docs = list(query.stream())
-            print(f"Historical: Queried {len(docs)} docs for device {device_id}")
             
-            # Filter to keep only first reading per hour
-            hourly_readings = {}
+            device_recent = []
             for doc in docs:
                 reading = doc.to_dict()
-                timestamp = reading.get('server_timestamp')
+                reading['id'] = doc.id
+                reading['device_id'] = device_id
+                reading['device_name'] = device_name
                 
-                if timestamp:
-                    # Create hour key (truncate to hour)
-                    if hasattr(timestamp, 'replace'):
-                        hour_key = timestamp.replace(minute=0, second=0, microsecond=0)
-                    else:
-                        try:
-                            ts = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
-                            hour_key = ts.replace(minute=0, second=0, microsecond=0)
-                        except:
-                            continue
+                if 'server_timestamp' in reading and hasattr(reading['server_timestamp'], 'isoformat'):
+                    reading['server_timestamp'] = reading['server_timestamp'].isoformat()
                     
-                    # Keep first reading per hour only
-                    if hour_key not in hourly_readings:
-                        reading['id'] = doc.id
-                        reading['device_id'] = device_id
-                        reading['device_name'] = device_name
-                        
-                        if 'server_timestamp' in reading and hasattr(reading['server_timestamp'], 'isoformat'):
-                            reading['server_timestamp'] = reading['server_timestamp'].isoformat()
-                        
-                        hourly_readings[hour_key] = reading
+                device_recent.append(reading)
             
-            all_sparse_readings.extend(hourly_readings.values())
-            print(f"Historical: Filtered to {len(hourly_readings)} hourly samples for device {device_id}")
+            recent_readings.extend(device_recent)
+            
+            # 2. Fetch Historic Data (Smart Sampling)
+            # ==========================================
+            # Goal: Get up to historic_limit samples distributed across the available history.
+            # Strategy:
+            # 1. Get the oldest reading timestamp (1 read).
+            # 2. Get the newest reading timestamp (already have it from recent data).
+            # 3. Calculate the time range and step size.
+            # 4. Issue point queries for N samples distributed over that range.
+            
+            # This ensures we get data across the *actual* history, whether it's 1 day or 1 year.
+            
+            device_historic = []
+            
+            # Only fetch historic if we have recent data (device is active)
+            if device_recent and 'server_timestamp' in device_recent[0]:
+                try:
+                    # Get newest time
+                    newest_ts_str = device_recent[0]['server_timestamp']
+                    newest_time = datetime.fromisoformat(newest_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                    
+                    # Get oldest time (1 read)
+                    oldest_query = readings_ref.order_by('server_timestamp', direction='ASCENDING').limit(1)
+                    oldest_docs = list(oldest_query.stream())
+                    
+                    if oldest_docs:
+                        oldest_doc = oldest_docs[0].to_dict()
+                        if 'server_timestamp' in oldest_doc and oldest_doc['server_timestamp']:
+                            if hasattr(oldest_doc['server_timestamp'], 'isoformat'):
+                                # It's a datetime object
+                                oldest_time = oldest_doc['server_timestamp'].replace(tzinfo=None)
+                            elif isinstance(oldest_doc['server_timestamp'], str):
+                                # It's a string
+                                oldest_time = datetime.fromisoformat(oldest_doc['server_timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
+                            else:
+                                oldest_time = None
+                        else:
+                            oldest_time = None
+                    else:
+                        oldest_time = None
+                    
+                    if oldest_time and newest_time and oldest_time < newest_time:
+                        time_range = newest_time - oldest_time
+                        total_seconds = time_range.total_seconds()
+                        
+                        # We want historic_limit samples.
+                        # Step size in seconds.
+                        # User requested up to 120 historic points.
+                        # 4 devices * 120 = 480 reads. This is acceptable for a one-time load.
+                        
+                        target_samples = min(historic_limit, 120) 
+                        step_seconds = total_seconds / target_samples
+                        
+                        if step_seconds > 0:
+                            for i in range(1, target_samples + 1):
+                                # Step backwards from newest (or forwards from oldest)
+                                # Let's step backwards to prioritize recent-ish history if we cut off
+                                query_time = newest_time - timedelta(seconds=step_seconds * i)
+                                
+                                # Don't query if it's overlap with "recent" (approx)
+                                # But simpler to just query and deduplicate later if needed
+                                
+                                try:
+                                    # Find reading closest to this time (just before)
+                                    h_query = readings_ref.where('server_timestamp', '<=', query_time)\
+                                                        .order_by('server_timestamp', direction='DESCENDING')\
+                                                        .limit(1)
+                                    
+                                    h_docs = list(h_query.stream())
+                                    if h_docs:
+                                        doc = h_docs[0]
+                                        reading = doc.to_dict()
+                                        reading['id'] = doc.id
+                                        reading['device_id'] = device_id
+                                        reading['device_name'] = device_name
+                                        
+                                        if 'server_timestamp' in reading and hasattr(reading['server_timestamp'], 'isoformat'):
+                                            reading['server_timestamp'] = reading['server_timestamp'].isoformat()
+                                        
+                                        device_historic.append(reading)
+                                except Exception as e:
+                                    # Ignore individual failures
+                                    continue
+                                    
+                except Exception as e:
+                    print(f"Error in historic fetch logic for {device_id}: {e}")
+            
+            historic_readings.extend(device_historic)
             
         except Exception as e:
-            print(f"Error fetching historical data for device {device_id}: {str(e)}")
+            print(f"Error processing device {device_id}: {e}")
             continue
+
+    # Sort results
+    def sort_key(r):
+        ts = r.get('server_timestamp') or r.get('timestamp')
+        return ts if ts else ''
+        
+    recent_readings.sort(key=sort_key, reverse=True)
+    historic_readings.sort(key=sort_key, reverse=True)
     
-    # Sort by timestamp (oldest first)
-    all_sparse_readings.sort(key=lambda r: r.get('server_timestamp', ''))
-    
-    return all_sparse_readings
+    return {
+        'recent': recent_readings,
+        'historic': historic_readings
+    }
+
+
+def get_sparse_historical_readings(user_id, hours=168, since_timestamp=None):
+    """
+    [DEPRECATED] - Kept for backward compatibility but routes.py should switch to get_recent_and_historic_readings.
+    """
+    return []
 
 
 def write_reading(reading_doc, device_id, user_id):
@@ -802,6 +864,7 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
     all_humidities = []
     all_soil_moistures = []
     all_lights = []
+    all_uv_lights = []
     
     for device in devices:
         device_id = device['device_id']
@@ -837,7 +900,7 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
         all_humidities.extend(humidities)
         all_soil_moistures.extend(soil_moistures)
         all_lights.extend(lights)
-        all_uv_lights = uv_lights
+        all_uv_lights.extend(uv_lights)
         
         # Prepare device data (remove internal fields like _source)
         clean_readings = []
@@ -900,4 +963,3 @@ def prepare_data_for_gemini(user_id, time_range_hours=24, limit_per_device=50):
         'devices': formatted_devices,
         'overall_summary': overall_summary
     }
-

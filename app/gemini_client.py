@@ -397,8 +397,8 @@ def construct_prompt(formatted_data, analysis_history=None):
         summary = device.get('summary', {})
         recent_readings = device.get('recent_readings', [])
         
-        # Get latest reading
-        latest = recent_readings[-1] if recent_readings else {}
+        # Get latest reading (list is sorted descending, so 0 is newest)
+        latest = recent_readings[0] if recent_readings else {}
         
         device_details_section += f"""
 {device_name} (Device ID: {device_id}, Type: {device_description})
