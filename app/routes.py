@@ -1293,7 +1293,9 @@ def get_user_advice():
         # Save new analysis result to Firestore and update cache
         try:
             from app.gemini_client import save_analysis_result
-            save_analysis_result(advice, user_id)
+            # Make a copy before saving - save_analysis_result modifies the object in place
+            advice_copy = advice.copy()
+            save_analysis_result(advice_copy, user_id)
             
             # Update cache with new analysis (keep only last 3)
             current_history = cached_data.get('analysis_history', [])
