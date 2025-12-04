@@ -1010,11 +1010,11 @@ function createDeviceCard(device, latestReading, readings) {
             <div class="control-group">
                 <label for="sampling-rate-${device.device_id}">Sampling:</label>
                 <select id="sampling-rate-${device.device_id}" class="sampling-rate-select" data-device-id="${device.device_id}">
-                    <option value="15" ${currentInterval == 15 ? 'selected' : ''}>15s</option>
                     <option value="30" ${currentInterval == 30 ? 'selected' : ''}>30s</option>
                     <option value="60" ${currentInterval == 60 ? 'selected' : ''}>1m</option>
-                    <option value="900" ${currentInterval == 900 ? 'selected' : ''}>15m</option>
-                    <option value="1800" ${currentInterval == 1800 ? 'selected' : ''}>30m</option>
+                    <option value="120" ${currentInterval == 120 ? 'selected' : ''}>2m</option>
+                    <option value="300" ${currentInterval == 300 ? 'selected' : ''}>5m</option>
+                    <option value="600" ${currentInterval == 600 ? 'selected' : ''}>10m</option>
                 </select>
             </div>
         </div>
