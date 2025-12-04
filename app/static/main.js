@@ -618,8 +618,25 @@ function createDeviceCard(device, latestReading, readings) {
     card.className = 'device-card';
     card.id = `device-card-${device.device_id}`;
     
-    const lastSeen = device.last_seen ? new Date(device.last_seen) : null;
-    const isOnline = lastSeen && (Date.now() - lastSeen.getTime()) < 3600000; // 1 hour
+    // Determine online status from CACHED data (most recent reading timestamp)
+    // Never query database - use cache only
+    // Check if device has sent data in the last 10 minutes
+    let isOnline = false;
+    if (latestReading) {
+        // Use the timestamp from the most recent cached reading
+        const readingTime = latestReading.server_timestamp || latestReading.timestamp;
+        if (readingTime) {
+            try {
+                const lastReadingTime = new Date(readingTime).getTime();
+                const tenMinutesAgo = Date.now() - 600000; // 10 minutes in milliseconds
+                isOnline = lastReadingTime > tenMinutesAgo;
+            } catch (e) {
+                console.warn(`Error parsing timestamp for device ${device.device_id}:`, e);
+                isOnline = false;
+            }
+        }
+    }
+    
     const statusClass = isOnline ? 'status-online' : 'status-offline';
     const statusText = isOnline ? '● Online' : '○ Offline';
     
@@ -1322,10 +1339,20 @@ function setupEventListeners() {
     // Device description event handlers
     document.addEventListener('click', async (e) => {
         if (e.target.classList.contains('description-toggle')) {
+            console.log('[Description] Toggle clicked');
             const section = e.target.closest('.device-description-section');
+            if (!section) {
+                console.error('[Description] Could not find device-description-section');
+                return;
+            }
             const editor = section.querySelector('.description-editor');
             const textarea = section.querySelector('.description-textarea');
             const deviceId = section.dataset.deviceId;
+            
+            if (!editor || !textarea) {
+                console.error('[Description] Could not find editor or textarea elements');
+                return;
+            }
             
             const device = userDevices.find(d => d.device_id === deviceId);
             textarea.value = device?.description || '';
@@ -1334,6 +1361,7 @@ function setupEventListeners() {
             editor.style.display = 'block';
             e.target.style.display = 'none';
             textarea.focus();
+            console.log('[Description] Editor opened for device:', deviceId);
         }
         
         if (e.target.classList.contains('description-save-btn')) {
@@ -1405,6 +1433,14 @@ function setupEventListeners() {
             updateCharCount(section);
         }
     });
+}
+
+function updateCharCount(section) {
+    const textarea = section.querySelector('.description-textarea');
+    const countSpan = section.querySelector('.char-count');
+    if (textarea && countSpan) {
+        countSpan.textContent = textarea.value.length;
+    }
 }
 
 // ========================================
