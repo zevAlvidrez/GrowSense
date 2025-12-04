@@ -861,6 +861,22 @@ async function loadUserAdvice() {
 
 function updateDeviceCards() {
     const grid = document.getElementById('devices-grid');
+    
+    // Preserve open description editor state before clearing
+    // This prevents losing unsaved text during auto-refresh
+    let openEditorState = null;
+    const openEditor = grid.querySelector('.description-editor');
+    if (openEditor && openEditor.style.display !== 'none') {
+        const section = openEditor.closest('.device-description-section');
+        const textarea = openEditor.querySelector('.description-textarea');
+        if (section && textarea) {
+            openEditorState = {
+                deviceId: section.dataset.deviceId,
+                unsavedText: textarea.value
+            };
+        }
+    }
+    
     grid.innerHTML = '';
     
     if (userDevices.length === 0) {
@@ -884,6 +900,25 @@ function updateDeviceCards() {
         // Initialize chart for this device
         if (deviceReadings.length > 0) {
             initializeDeviceChart(deviceId, deviceReadings);
+        }
+    }
+    
+    // Restore open description editor state after rebuild
+    if (openEditorState) {
+        const section = grid.querySelector(
+            `.device-description-section[data-device-id="${openEditorState.deviceId}"]`
+        );
+        if (section) {
+            const editor = section.querySelector('.description-editor');
+            const toggle = section.querySelector('.description-toggle');
+            const textarea = section.querySelector('.description-textarea');
+            
+            if (editor && toggle && textarea) {
+                textarea.value = openEditorState.unsavedText;
+                editor.style.display = 'block';
+                toggle.style.display = 'none';
+                updateCharCount(section);
+            }
         }
     }
     
