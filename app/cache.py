@@ -52,7 +52,7 @@ class ReadingsCache:
             user_id: Firebase user ID
             
         Returns:
-            Dictionary with 'devices', 'readings', 'cached_at' if cache hit,
+            Dictionary with 'devices', 'readings_by_device', 'analysis_history', 'cached_at' if cache hit,
             None if cache miss or expired
         """
         with self._lock:
@@ -70,10 +70,11 @@ class ReadingsCache:
             return {
                 'devices': meta.get('devices', []),
                 'readings_by_device': self._cache.get(user_id, {}),
+                'analysis_history': meta.get('analysis_history', []),  # Last 3 analyses
                 'cached_at': meta['cached_at']
             }
     
-    def set(self, user_id: str, devices: List[Dict], readings_by_device: Dict[str, Any]):
+    def set(self, user_id: str, devices: List[Dict], readings_by_device: Dict[str, Any], analysis_history: Optional[List[Dict]] = None):
         """
         Cache data for a user.
         
@@ -81,6 +82,7 @@ class ReadingsCache:
             user_id: Firebase user ID
             devices: List of device metadata dictionaries
             readings_by_device: Dictionary mapping device_id to list of readings OR dict with recent/historic
+            analysis_history: Optional list of previous analyses (last 3) for this user
         """
         with self._lock:
             # Limit readings per device to prevent memory bloat
@@ -98,6 +100,7 @@ class ReadingsCache:
             self._cache[user_id] = limited_readings
             self._metadata[user_id] = {
                 'devices': devices,
+                'analysis_history': analysis_history or [],  # Store last 3 analyses
                 'cached_at': datetime.utcnow(),
                 'ttl_expires': datetime.utcnow() + timedelta(seconds=self.ttl_seconds)
             }
@@ -139,6 +142,23 @@ class ReadingsCache:
                 self._cache[user_id][device_id] = cached_data[:self.max_readings_per_device]
             
             # Don't update cached_at timestamp - we want TTL to expire based on full refresh
+    
+    def update_analysis_history(self, user_id: str, analysis_history: List[Dict]):
+        """
+        Update analysis history for a user in cache.
+        This allows analysis history to be added/updated without repopulating entire cache.
+        
+        Args:
+            user_id: Firebase user ID
+            analysis_history: List of analysis dictionaries (last 3)
+        """
+        with self._lock:
+            if user_id not in self._metadata:
+                # Cache doesn't exist for this user yet - can't update history
+                return
+            
+            # Update analysis history in metadata
+            self._metadata[user_id]['analysis_history'] = analysis_history[:3]  # Only store last 3
     
     def invalidate(self, user_id: str):
         """
@@ -184,5 +204,6 @@ class ReadingsCache:
 # Global singleton instance
 # Very long TTL since client-side localStorage is the primary cache
 # Server cache is only for Gemini AI and device upload updates
-readings_cache = ReadingsCache(ttl_seconds=86400, max_readings_per_device=200)  # 24 hours
+# IMPORTANT: 24 hour TTL must be maintained to minimize database operations - do not shorten this
+readings_cache = ReadingsCache(ttl_seconds=86400, max_readings_per_device=200)  # 24 hours - DO NOT SHORTEN
 

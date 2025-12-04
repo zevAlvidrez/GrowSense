@@ -882,19 +882,24 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
     Prepare user's device data for Gemini analysis FROM CACHE (not database).
     This function uses cached data from local storage instead of querying Firestore.
     
+    IMPORTANT: Only uses recent readings (not historic). Samples 30 readings per device
+    from recent data (every 4th reading if ~120 available, with fallback logic).
+    Also extracts analysis history from cache if available.
+    
     Args:
         cached_data: Cached data dictionary from readings_cache.get()
         user_id: Firebase user ID
-        time_range_hours: Number of hours of data to include (default: 24)
-        limit_per_device: Maximum readings per device to include (default: 50)
+        time_range_hours: Number of hours of data to include (default: 24, for summary only)
+        limit_per_device: Maximum readings per device to include (default: 50, ignored - uses 30)
         
     Returns:
-        dict: Formatted data structure ready for Gemini analysis (same format as prepare_data_for_gemini)
+        dict: Formatted data structure ready for Gemini analysis with raw recent readings and analysis_history
     """
     from datetime import datetime, timedelta
     
     devices = cached_data.get('devices', [])
     readings_by_device = cached_data.get('readings_by_device', {})
+    analysis_history = cached_data.get('analysis_history', [])  # Extract from cache
     
     if not devices:
         return {
@@ -907,10 +912,10 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
             }
         }
     
-    # Filter readings by time range and limit
-    cutoff_time = datetime.utcnow() - timedelta(hours=time_range_hours)
+    # Target: 30 readings per device (sampled from recent only)
+    TARGET_READINGS_PER_DEVICE = 30
     
-    # Build formatted data structure (same format as prepare_data_for_gemini)
+    # Build formatted data structure with raw recent readings
     formatted_devices = []
     all_temperatures = []
     all_humidities = []
@@ -920,65 +925,42 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
     
     for device in devices:
         device_id = device['device_id']
-        device_readings = readings_by_device.get(device_id, [])
+        device_readings_raw = readings_by_device.get(device_id, [])
         
         # Handle new cache structure (dict with recent/historic)
-        if isinstance(device_readings, dict):
-            # Combine recent and historic for Gemini analysis
-            # Deduplicate by ID if needed, but simple concatenation is likely fine for analysis
-            device_readings = device_readings.get('recent', []) + device_readings.get('historic', [])
+        # IMPORTANT: Only use recent readings, ignore historic
+        if isinstance(device_readings_raw, dict):
+            recent_readings = device_readings_raw.get('recent', [])
+        else:
+            # Legacy list structure - assume all are recent
+            recent_readings = device_readings_raw if isinstance(device_readings_raw, list) else []
         
-        # Filter by time range and limit
-        filtered_readings = []
-        for reading in device_readings:
-            # Check timestamp
-            reading_time = reading.get('server_timestamp') or reading.get('timestamp')
-            if reading_time:
-                if isinstance(reading_time, str):
-                    try:
-                        reading_time = datetime.fromisoformat(reading_time.replace('Z', '+00:00'))
-                    except:
-                        continue
-                if reading_time < cutoff_time:
-                    continue
-            filtered_readings.append(reading)
-            if len(filtered_readings) >= limit_per_device:
-                break
-        
-        if len(filtered_readings) == 0:
+        if len(recent_readings) == 0:
             continue
         
-        # Calculate summary statistics (same as prepare_data_for_gemini)
-        temperatures = [r.get('temperature') for r in filtered_readings if r.get('temperature') is not None]
-        humidities = [r.get('humidity') for r in filtered_readings if r.get('humidity') is not None]
-        soil_moistures = [r.get('soil_moisture') for r in filtered_readings if r.get('soil_moisture') is not None]
-        lights = [r.get('light') for r in filtered_readings if r.get('light') is not None]
+        # Sample readings: target 30 readings per device
+        # If we have ~120 readings, sample every 4th (120/30 = 4)
+        # Build in checks for different reading counts
+        if len(recent_readings) > TARGET_READINGS_PER_DEVICE:
+            # Calculate step size to get approximately TARGET_READINGS_PER_DEVICE readings
+            step = max(1, len(recent_readings) // TARGET_READINGS_PER_DEVICE)
+            sampled_readings = recent_readings[::step][:TARGET_READINGS_PER_DEVICE]
+            
+            # Ensure we include the most recent reading (index 0) and try to include the oldest
+            if sampled_readings and sampled_readings[0] != recent_readings[0]:
+                sampled_readings.insert(0, recent_readings[0])
+            if len(recent_readings) > 1 and sampled_readings[-1] != recent_readings[-1]:
+                sampled_readings.append(recent_readings[-1])
+            
+            # Limit to TARGET_READINGS_PER_DEVICE
+            sampled_readings = sampled_readings[:TARGET_READINGS_PER_DEVICE]
+        else:
+            # Use all readings if we have <= 30
+            sampled_readings = recent_readings
         
-        # UV light - check both top-level field and raw_json
-        uv_lights = []
-        for r in filtered_readings:
-            if r.get('uv_light') is not None:
-                uv_lights.append(r.get('uv_light'))
-            elif r.get('raw_json') and r.get('raw_json').get('uv_light') is not None:
-                uv_lights.append(r.get('raw_json').get('uv_light'))
-        
-        # Calculate averages
-        avg_temp = sum(temperatures) / len(temperatures) if temperatures else None
-        avg_humidity = sum(humidities) / len(humidities) if humidities else None
-        avg_soil = sum(soil_moistures) / len(soil_moistures) if soil_moistures else None
-        avg_light = sum(lights) / len(lights) if lights else None
-        avg_uv = sum(uv_lights) / len(uv_lights) if uv_lights else None
-        
-        # Collect for overall summary
-        all_temperatures.extend(temperatures)
-        all_humidities.extend(humidities)
-        all_soil_moistures.extend(soil_moistures)
-        all_lights.extend(lights)
-        all_uv_lights.extend(uv_lights)
-        
-        # Prepare device data (same format as prepare_data_for_gemini)
+        # Prepare clean readings with timestamps preserved
         clean_readings = []
-        for reading in filtered_readings:
+        for reading in sampled_readings:
             uv_value = reading.get('uv_light')
             if uv_value is None and reading.get('raw_json'):
                 uv_value = reading.get('raw_json').get('uv_light')
@@ -991,21 +973,37 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
                 'soil_moisture': reading.get('soil_moisture'),
                 'uv_light': uv_value
             }
+            # Remove None values but keep all fields that have values
             clean_reading = {k: v for k, v in clean_reading.items() if v is not None}
             clean_readings.append(clean_reading)
+        
+        # Calculate summary statistics for internal use (not emphasized in prompt)
+        temperatures = [r.get('temperature') for r in clean_readings if r.get('temperature') is not None]
+        humidities = [r.get('humidity') for r in clean_readings if r.get('humidity') is not None]
+        soil_moistures = [r.get('soil_moisture') for r in clean_readings if r.get('soil_moisture') is not None]
+        lights = [r.get('light') for r in clean_readings if r.get('light') is not None]
+        uv_lights = [r.get('uv_light') for r in clean_readings if r.get('uv_light') is not None]
+        
+        # Collect for overall summary
+        all_temperatures.extend(temperatures)
+        all_humidities.extend(humidities)
+        all_soil_moistures.extend(soil_moistures)
+        all_lights.extend(lights)
+        all_uv_lights.extend(uv_lights)
         
         device_data = {
             'device_id': device_id,
             'name': device.get('name', device_id),
+            'description': device.get('description'),  # Include description for prompt
             'last_seen': device.get('last_seen'),
-            'recent_readings': clean_readings,
+            'recent_readings': clean_readings,  # Full array of 30 sampled readings with timestamps
             'summary': {
-                'reading_count': len(filtered_readings),
-                'avg_temperature': round(avg_temp, 2) if avg_temp else None,
-                'avg_humidity': round(avg_humidity, 2) if avg_humidity else None,
-                'avg_light': round(avg_light, 0) if avg_light else None,
-                'avg_soil_moisture': round(avg_soil, 2) if avg_soil else None,
-                'avg_uv_light': round(avg_uv, 2) if avg_uv else None,
+                'reading_count': len(clean_readings),
+                'avg_temperature': round(sum(temperatures) / len(temperatures), 2) if temperatures else None,
+                'avg_humidity': round(sum(humidities) / len(humidities), 2) if humidities else None,
+                'avg_light': round(sum(lights) / len(lights), 0) if lights else None,
+                'avg_soil_moisture': round(sum(soil_moistures) / len(soil_moistures), 2) if soil_moistures else None,
+                'avg_uv_light': round(sum(uv_lights) / len(uv_lights), 2) if uv_lights else None,
                 'min_temperature': round(min(temperatures), 2) if temperatures else None,
                 'max_temperature': round(max(temperatures), 2) if temperatures else None,
                 'min_humidity': round(min(humidities), 2) if humidities else None,
@@ -1018,7 +1016,7 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
         }
         formatted_devices.append(device_data)
     
-    # Overall summary
+    # Overall summary (for metadata, not emphasized in prompt)
     overall_summary = {
         'total_readings': sum(len(d.get('recent_readings', [])) for d in formatted_devices),
         'time_range': f'last_{time_range_hours}_hours',
@@ -1033,7 +1031,8 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
         'user_id': user_id,
         'device_count': len(formatted_devices),
         'devices': formatted_devices,
-        'overall_summary': overall_summary
+        'overall_summary': overall_summary,
+        'analysis_history': analysis_history  # Include analysis history from cache
     }
 
 
@@ -1173,6 +1172,10 @@ def get_user_advice():
     """
     Get plant care advice from Gemini AI based on user's sensor data.
     
+    IMPORTANT: This endpoint requires cached data to be available. Cache must be populated
+    by loading user data first (via /user_data endpoint). This ensures no database
+    queries are made during advice generation.
+    
     Requires Authorization header: "Bearer <firebase_id_token>"
     
     Query parameters:
@@ -1184,6 +1187,9 @@ def get_user_advice():
         - overall_advice: General assessment
         - device_advice: Device-specific recommendations
         - insights: Key observations
+    
+    Errors:
+        - 400: No cached data available (user must refresh dashboard first)
     """
     try:
         user_id = g.user['uid']
@@ -1201,30 +1207,66 @@ def get_user_advice():
         except ValueError:
             limit_per_device = 50
         
-        # IMPORTANT: Check cache first (local cache/storage), NOT database
-        formatted_data = None
+        # IMPORTANT: Cache-only operation - no database fallback
         cached_data = readings_cache.get(user_id)
         
-        if cached_data:
-            # Use cached data (from local cache/storage, not database)
-            print(f"[Cache] Using cached data for Gemini advice (user: {user_id})")
-            formatted_data = prepare_data_for_gemini_from_cache(
-                cached_data,
-                user_id,
-                time_range_hours=time_range_hours,
-                limit_per_device=limit_per_device
-            )
-        else:
-            # Cache miss - fall back to database (but this should be rare)
-            print(f"[Cache] Cache miss - fetching from database for Gemini advice (user: {user_id})")
-            formatted_data = prepare_data_for_gemini(
-                user_id,
-                time_range_hours=time_range_hours,
-                limit_per_device=limit_per_device
-            )
+        if not cached_data:
+            # Cache is empty - user must load data first
+            print(f"[Cache] Cache miss for Gemini advice (user: {user_id}) - returning error")
+            return jsonify({
+                "error": "No cached data available. Please refresh your dashboard to load data first."
+            }), 400
+        
+        # Ensure analysis history is in cache (fetch if missing, but not if empty list already cached)
+        if 'analysis_history' not in cached_data:
+            # Key is missing - fetch from Firestore and update cache (even if empty)
+            from app.gemini_client import load_user_analysis_history
+            analysis_history = load_user_analysis_history(user_id, limit=3)
+            # Cache the result (even if empty list) to avoid repeated queries
+            readings_cache.update_analysis_history(user_id, analysis_history)
+            cached_data['analysis_history'] = analysis_history
+            if analysis_history:
+                print(f"[Cache] Fetched and cached {len(analysis_history)} analysis history entries for user {user_id}")
+            else:
+                print(f"[Cache] Fetched analysis history for user {user_id} - no history found (cached empty list)")
+        
+        # Use cached data (cache-only, no database queries after initial fetch)
+        print(f"[Cache] Using cached data for Gemini advice (user: {user_id})")
+        formatted_data = prepare_data_for_gemini_from_cache(
+            cached_data,
+            user_id,
+            time_range_hours=time_range_hours,
+            limit_per_device=limit_per_device
+        )
+        
+        # Validate that we have data to analyze
+        if not formatted_data or formatted_data.get('device_count', 0) == 0:
+            return jsonify({
+                "error": "No device data available in cache. Please refresh your dashboard to load data first."
+            }), 400
         
         # Get advice from Gemini
         advice = get_gemini_advice(formatted_data)
+        
+        # Save new analysis result to Firestore and update cache
+        try:
+            from app.gemini_client import save_analysis_result
+            save_analysis_result(advice, user_id)
+            
+            # Update cache with new analysis (keep only last 3)
+            current_history = cached_data.get('analysis_history', [])
+            # Add timestamp to advice for cache (matches Firestore format)
+            advice_with_timestamp = advice.copy()
+            advice_with_timestamp['analysis_timestamp'] = datetime.utcnow().isoformat() + 'Z'
+            # Add new advice to history (most recent at end, oldest to newest order)
+            updated_history = current_history + [advice_with_timestamp]
+            # Keep only last 3 (drops oldest if we had 3 already)
+            updated_history = updated_history[-3:]
+            readings_cache.update_analysis_history(user_id, updated_history)
+            print(f"[Cache] Updated analysis history in cache for user {user_id} (now {len(updated_history)} entries)")
+        except Exception as e:
+            # Non-critical: saving history shouldn't fail the request
+            print(f"Warning: Failed to save/update analysis history: {str(e)}")
         
         return jsonify({
             "success": True,

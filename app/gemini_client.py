@@ -90,7 +90,7 @@ except Exception as e:
     gemini_model = None
 
 
-def load_user_analysis_history(user_id):
+def load_user_analysis_history(user_id, limit=3):
     """
     Load previous analysis history for a specific user.
     
@@ -99,9 +99,10 @@ def load_user_analysis_history(user_id):
     
     Args:
         user_id: Firebase user ID (required - must not be None)
+        limit: Number of most recent analyses to return (default: 3)
     
     Returns:
-        list: Previous analyses for the user (last 10, ordered chronologically)
+        list: Previous analyses for the user (last N, ordered chronologically, oldest to newest)
     """
     if not user_id:
         print(f"Warning: Cannot load analysis history - user_id is None or empty")
@@ -110,10 +111,10 @@ def load_user_analysis_history(user_id):
     try:
         db = get_firestore()
         
-        # Get last 10 analyses for THIS SPECIFIC USER ordered by timestamp
+        # Get last N analyses for THIS SPECIFIC USER ordered by timestamp
         # Path: /users/{user_id}/analysis_history/ (per-user isolation)
         history_ref = db.collection('users').document(user_id).collection('analysis_history')
-        query = history_ref.order_by('analysis_timestamp', direction='DESCENDING').limit(10)
+        query = history_ref.order_by('analysis_timestamp', direction='DESCENDING').limit(limit)
         
         docs = list(query.stream())
         
@@ -169,14 +170,9 @@ def get_gemini_advice(formatted_data, output_format='api'):
             "insights": []
         }
     
-    # Load previous analysis history for context (per-user, from Firestore)
-    user_id = formatted_data.get('user_id')
-    analysis_history = []
-    if user_id:
-        # Load analysis history for THIS specific user only
-        analysis_history = load_user_analysis_history(user_id)
-    else:
-        print(f"Warning: formatted_data missing user_id - cannot load analysis history")
+    # Get analysis history from formatted_data (from cache, not Firestore)
+    # If not present in formatted_data, use empty list (no history available)
+    analysis_history = formatted_data.get('analysis_history', [])
     
     # Construct prompt based on output format
     if output_format == 'analysis':
@@ -388,24 +384,22 @@ def construct_prompt(formatted_data, analysis_history=None):
     devices = formatted_data.get('devices', [])
     overall_summary = formatted_data.get('overall_summary', {})
     
-    # Build concise device details section with descriptions
+    # Build device details section with full recent readings as JSON
     device_details_section = ""
     for idx, device in enumerate(devices, 1):
         device_id = device.get('device_id', 'unknown')
         device_name = device.get('name', device_id)
-        device_description = device.get('description') or device.get('plant_description') or device.get('plant_type') or "Houseplant"
-        summary = device.get('summary', {})
+        device_description = device.get('description') or "No description provided"
         recent_readings = device.get('recent_readings', [])
         
-        # Get latest reading (list is sorted descending, so 0 is newest)
-        latest = recent_readings[0] if recent_readings else {}
+        # Include full recent readings array as JSON
+        readings_json = json.dumps(recent_readings, indent=2, default=str)
         
         device_details_section += f"""
-{device_name} (Device ID: {device_id}, Type: {device_description})
-- Soil moisture: {latest.get('soil_moisture', summary.get('avg_soil_moisture', 'N/A'))}% (avg: {summary.get('avg_soil_moisture', 'N/A')}%)
-- Temperature: {latest.get('temperature', summary.get('avg_temperature', 'N/A'))}°C (avg: {summary.get('avg_temperature', 'N/A')}°C)
-- Humidity: {latest.get('humidity', summary.get('avg_humidity', 'N/A'))}% (avg: {summary.get('avg_humidity', 'N/A')}%)
-- UV Index: {latest.get('uv_light', summary.get('avg_uv_light', 'N/A'))} (avg: {summary.get('avg_uv_light', 'N/A')})
+Device: {device_name} (Device ID: {device_id})
+Description: {device_description}
+Recent Readings ({len(recent_readings)} readings with timestamps):
+{readings_json}
 """
     
     # Analysis history section (simplified)
@@ -416,15 +410,18 @@ Previous analysis context (from cache/local storage only):
 {json.dumps(analysis_history[-3:], indent=2, default=str)}
 """
     
-    # Finite list of allowed action items (use actual device names, not "Plant X")
+    # Expanded list of allowed action items (use actual device names, not "Plant X")
     device_names_list = ", ".join([d.get('name', d.get('device_id', 'unknown')) for d in devices])
     action_items_list = f"""
 ALLOWED ACTION ITEMS (use the EXACT device names from above: {device_names_list}):
 - "[DEVICE_NAME] needs water"
+- "[DEVICE_NAME] should be watered within [X] days/hours" (be specific based on soil moisture trend)
 - "You should consider moving [DEVICE_NAME] into a spot with more sunlight"
 - "You should consider moving [DEVICE_NAME] into a spot with less sunlight"
 - "You should consider moving [DEVICE_NAME] into a spot with more indirect light"
 - "You should consider moving [DEVICE_NAME] into a spot with less direct light"
+- "Consider moving [DEVICE_NAME] closer to [OTHER_DEVICE_NAME]'s location for better [light/humidity/temperature]" (cross-device suggestion)
+- "Compare conditions between [DEVICE_NAME] and [OTHER_DEVICE_NAME] - [specific suggestion]" (cross-device comparison)
 - "[DEVICE_NAME] needs more humidity"
 - "[DEVICE_NAME] needs less humidity"
 - "[DEVICE_NAME] temperature is too high"
@@ -432,6 +429,7 @@ ALLOWED ACTION ITEMS (use the EXACT device names from above: {device_names_list}
 - "[DEVICE_NAME] is healthy, continue current care"
 
 Replace [DEVICE_NAME] with the actual device name from the list above (e.g., "{devices[0].get('name', devices[0].get('device_id', 'Device')) if devices else 'Device'} needs water").
+For cross-device suggestions, use suggestion-based language ("consider", "might benefit", "could try") rather than imperative commands.
 """
     
     prompt = f"""IMPORTANT: This data comes ONLY from cache/local storage, NOT from database.
@@ -441,32 +439,55 @@ Analyze plant sensor data and provide direct, actionable advice.
 {device_details_section}
 {analysis_history_section}
 
+IMPORTANT: Device Descriptions
+- Each device may have a description field that provides context about the plant, location, or setup
+- Use descriptions to understand plant type, location (e.g., "living room", "bedroom window"), or specific care needs
+- If a description is provided, use it to tailor your advice more specifically (e.g., "The monstera in the living room..." instead of generic advice)
+- If "No description provided" is shown, you can still provide general advice based on sensor readings
+- Descriptions may contain plant species, location information, or care notes - extract and use this information naturally
+
 Guidelines:
 - Soil moisture: <30% = water needed, 30-60% = good, >60% = too wet
 - UV Index: 0-2 = Low (good for houseplants), 3+ = may need shade
 - Temperature: 18-24°C ideal for most houseplants
 - Humidity: 40-60% ideal
 
+Cross-Device Analysis:
+- You can compare conditions across devices even if they're in different locations
+- Use suggestion-based language for cross-device recommendations (e.g., "consider", "might benefit", "could try")
+- If device descriptions indicate devices are in the same room/location, you can suggest moving plants closer to locations of other devices
+- Example: "Consider moving the plant at Device A closer to Device B's location, as Device B receives more indirect light which would benefit this plant type"
+- Cross-device suggestions should be helpful comparisons, not mandatory actions
+
 {action_items_list}
+
+Response Format Requirements:
+- overall_advice: Keep concise - 1-2 sentence summary followed by 2-3 bullet point insights
+- device_advice: Provide detailed, specific advice - 2-3 sentences per device with concrete recommendations
+  * Use device descriptions and plant types when available (e.g., "The monstera monitored by Device A should be watered within the next day")
+  * Include specific timeframes when relevant (e.g., "water within 24 hours", "check again in 3 days")
+  * Make cross-device comparisons when beneficial (e.g., "Device A gets less light than Device B - consider moving this plant if it needs more light")
+- insights: 2-3 brief top-level observations across all devices
+- recommendations: Use the allowed action items list above, replacing [DEVICE_NAME] with actual device names
 
 Respond with JSON only (no markdown):
 {{
-  "overall_advice": "1-2 sentence summary",
+  "overall_advice": "1-2 sentence summary with 2-3 bullet points",
   "device_advice": [
     {{
       "device_id": "EXACT_DEVICE_ID_FROM_ABOVE",
       "device_name": "EXACT_DEVICE_NAME_FROM_ABOVE",
-      "advice": "1 sentence direct assessment",
+      "advice": "2-3 sentences with specific, detailed recommendations. Use plant type and location from descriptions when available. Include timeframes when relevant.",
       "priority": "low|medium|high|urgent",
-      "recommendations": ["[DEVICE_NAME] needs water", "You should consider moving [DEVICE_NAME] into a spot with more sunlight", ...]
+      "recommendations": ["[DEVICE_NAME] should be watered within 24 hours", "Consider moving [DEVICE_NAME] closer to [OTHER_DEVICE_NAME]'s location for better light", ...]
     }}
   ],
-  "insights": ["Brief insight 1", "Brief insight 2"]
+  "insights": ["Brief insight 1", "Brief insight 2", "Brief insight 3"]
 }}
 
 IMPORTANT: Use the EXACT device_id and device_name from the device list above. Each device_advice entry MUST match a device from the list. Replace [DEVICE_NAME] with actual device names in recommendations.
 
-Be direct and concise. ONLY use action items from the allowed list above."""
+Be specific and detailed in device_advice, but concise in overall_advice and insights. Use descriptions and sensor trends to provide actionable, tailored recommendations."""
     
     return prompt
 
@@ -487,30 +508,25 @@ def construct_analysis_prompt(formatted_data, analysis_history=None):
     devices = formatted_data.get('devices', [])
     overall_summary = formatted_data.get('overall_summary', {})
     
-    # Get latest reading from any device
-    latest_reading = None
-    historical_readings = []
-    
-    for device in devices:
-        recent_readings = device.get('recent_readings', [])
-        if recent_readings:
-            # Sort by timestamp, get most recent
-            sorted_readings = sorted(recent_readings, key=lambda x: x.get('timestamp', ''), reverse=True)
-            if not latest_reading or (sorted_readings and sorted_readings[0].get('timestamp', '') > latest_reading.get('timestamp', '')):
-                latest_reading = sorted_readings[0]
-            historical_readings.extend(recent_readings)
-    
-    # Sort historical readings by timestamp
-    historical_readings.sort(key=lambda x: x.get('timestamp', ''))
-    
-    # Build concise device summary with descriptions
-    device_summary = ""
+    # Build device details section with full recent readings as JSON
+    device_details_section = ""
+    total_readings = 0
     for idx, device in enumerate(devices, 1):
         device_id = device.get('device_id', 'unknown')
         device_name = device.get('name', device_id)
-        device_description = device.get('description') or device.get('plant_description') or device.get('plant_type') or "Houseplant"
-        summary = device.get('summary', {})
-        device_summary += f"{device_name} (Device ID: {device_id}, Type: {device_description}) - soil={summary.get('avg_soil_moisture', 'N/A')}%, temp={summary.get('avg_temperature', 'N/A')}°C, humidity={summary.get('avg_humidity', 'N/A')}%, UV={summary.get('avg_uv_light', 'N/A')}\n"
+        device_description = device.get('description') or "No description provided"
+        recent_readings = device.get('recent_readings', [])
+        total_readings += len(recent_readings)
+        
+        # Include full recent readings array as JSON
+        readings_json = json.dumps(recent_readings, indent=2, default=str)
+        
+        device_details_section += f"""
+Device: {device_name} (Device ID: {device_id})
+Description: {device_description}
+Recent Readings ({len(recent_readings)} readings with timestamps):
+{readings_json}
+"""
     
     analysis_history_section = ""
     if analysis_history:
@@ -519,15 +535,18 @@ Previous analyses (from cache/local storage only):
 {json.dumps(analysis_history[-3:], indent=2, default=str)}
 """
     
-    # Finite list of allowed action items (use actual device names, not "Plant X")
+    # Expanded list of allowed action items (use actual device names, not "Plant X")
     device_names_list = ", ".join([d.get('name', d.get('device_id', 'unknown')) for d in devices])
     action_items_list = f"""
 ALLOWED ACTION ITEMS (use the EXACT device names from above: {device_names_list}):
 - "[DEVICE_NAME] needs water"
+- "[DEVICE_NAME] should be watered within [X] days/hours" (be specific based on soil moisture trend)
 - "You should consider moving [DEVICE_NAME] into a spot with more sunlight"
 - "You should consider moving [DEVICE_NAME] into a spot with less sunlight"
 - "You should consider moving [DEVICE_NAME] into a spot with more indirect light"
 - "You should consider moving [DEVICE_NAME] into a spot with less direct light"
+- "Consider moving [DEVICE_NAME] closer to [OTHER_DEVICE_NAME]'s location for better [light/humidity/temperature]" (cross-device suggestion)
+- "Compare conditions between [DEVICE_NAME] and [OTHER_DEVICE_NAME] - [specific suggestion]" (cross-device comparison)
 - "[DEVICE_NAME] needs more humidity"
 - "[DEVICE_NAME] needs less humidity"
 - "[DEVICE_NAME] temperature is too high"
@@ -535,17 +554,25 @@ ALLOWED ACTION ITEMS (use the EXACT device names from above: {device_names_list}
 - "[DEVICE_NAME] is healthy, continue current care"
 
 Replace [DEVICE_NAME] with the actual device name from the list above (e.g., "{devices[0].get('name', devices[0].get('device_id', 'Device')) if devices else 'Device'} needs water").
+For cross-device suggestions, use suggestion-based language ("consider", "might benefit", "could try") rather than imperative commands.
 """
     
     prompt = f"""IMPORTANT: This data comes ONLY from cache/local storage, NOT from database.
 
 Analyze plant sensor data and provide direct, actionable analysis.
 
-Devices: {device_count}
-{device_summary}
-Latest reading: {json.dumps(latest_reading, indent=2, default=str) if latest_reading else "N/A"}
-Recent history: {len(historical_readings)} readings
+Total Devices: {device_count}
+Total Recent Readings: {total_readings}
+
+{device_details_section}
 {analysis_history_section}
+
+IMPORTANT: Device Descriptions
+- Each device may have a description field that provides context about the plant, location, or setup
+- Use descriptions to understand plant type, location (e.g., "living room", "bedroom window"), or specific care needs
+- If a description is provided, use it to tailor your analysis more specifically (e.g., "The monstera in the living room..." instead of generic analysis)
+- If "No description provided" is shown, you can still provide general analysis based on sensor readings
+- Descriptions may contain plant species, location information, or care notes - extract and use this information naturally
 
 Guidelines:
 - Soil moisture: <30% = water needed, 30-60% = good, >60% = too wet
@@ -553,20 +580,35 @@ Guidelines:
 - Temperature: 18-24°C ideal
 - Humidity: 40-60% ideal
 
+Cross-Device Analysis:
+- You can compare conditions across devices even if they're in different locations
+- Use suggestion-based language for cross-device recommendations (e.g., "consider", "might benefit", "could try")
+- If device descriptions indicate devices are in the same room/location, you can suggest moving plants closer to locations of other devices
+- Example: "Consider moving the plant at Device A closer to Device B's location, as Device B receives more indirect light which would benefit this plant type"
+- Cross-device suggestions should be helpful comparisons, not mandatory actions
+
 {action_items_list}
+
+Response Format Requirements:
+- status_summary: Keep concise - 1 sentence direct status
+- trend_analysis: 1-2 sentences describing trends across devices
+- recommendations: Use the allowed action items list above, replacing [DEVICE_NAME] with actual device names
+  * Include specific timeframes when relevant (e.g., "water within 24 hours", "check again in 3 days")
+  * Make cross-device comparisons when beneficial (e.g., "Consider moving Device A closer to Device B's location for better light")
+  * Use device descriptions and plant types when available for more specific recommendations
 
 Respond with JSON only:
 {{
   "ideal_thresholds": {{"soil_moisture_percent": "30-60%", "soil_ph": "6.0-7.0"}},
   "plant_health_score": 0-10,
   "status_summary": "1 sentence direct status",
-  "trend_analysis": "1-2 sentence trend",
-  "recommendations": ["[DEVICE_NAME] needs water", "You should consider moving [DEVICE_NAME] into a spot with more sunlight", ...]
+  "trend_analysis": "1-2 sentence trend with cross-device comparisons when relevant",
+  "recommendations": ["[DEVICE_NAME] should be watered within 24 hours", "Consider moving [DEVICE_NAME] closer to [OTHER_DEVICE_NAME]'s location for better light", ...]
 }}
 
 IMPORTANT: Use the EXACT device names from the device list above when referencing specific devices. Replace [DEVICE_NAME] with actual device names.
 
-Be direct and concise. ONLY use action items from the allowed list above."""
+Be specific and detailed in recommendations, using descriptions and sensor trends to provide actionable, tailored suggestions."""
     
     return prompt
 
