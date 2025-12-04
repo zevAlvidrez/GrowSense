@@ -319,12 +319,14 @@ def upload_data():
                         'config': device_data,
                         'timestamp': current_time
                     }
-                    
-                    # Update device metadata in readings cache (includes description)
-                    try:
-                        readings_cache.update_device_metadata(user_id, device_id, device_data)
-                    except Exception as e:
-                        print(f"Warning: Failed to update device metadata in cache: {str(e)}")
+            
+            # Always update device metadata in readings cache (even if from config cache)
+            # This ensures device descriptions are available for Gemini prompts
+            if device_data:
+                try:
+                    readings_cache.update_device_metadata(user_id, device_id, device_data)
+                except Exception as e:
+                    print(f"Warning: Failed to update device metadata in cache: {str(e)}")
             
             response_data = {
                 "success": True,
@@ -910,6 +912,14 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
     readings_by_device = cached_data.get('readings_by_device', {})
     analysis_history = cached_data.get('analysis_history', [])  # Extract from cache
     
+    # Ensure devices is a list and readings_by_device is a dict
+    if not isinstance(devices, list):
+        devices = []
+    if not isinstance(readings_by_device, dict):
+        readings_by_device = {}
+    if not isinstance(analysis_history, list):
+        analysis_history = []
+    
     if not devices:
         return {
             "user_id": user_id,
@@ -918,7 +928,8 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
             "overall_summary": {
                 "total_readings": 0,
                 "time_range": f"last_{time_range_hours}_hours"
-            }
+            },
+            "analysis_history": analysis_history
         }
     
     # Target: 30 readings per device (sampled from recent only)
@@ -933,7 +944,10 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
     all_uv_lights = []
     
     for device in devices:
-        device_id = device['device_id']
+        device_id = device.get('device_id')
+        if not device_id:
+            # Skip devices without device_id
+            continue
         device_readings_raw = readings_by_device.get(device_id, [])
         
         # Handle new cache structure (dict with recent/historic)
@@ -1036,13 +1050,15 @@ def prepare_data_for_gemini_from_cache(cached_data, user_id, time_range_hours=24
         'avg_uv_light': round(sum(all_uv_lights) / len(all_uv_lights), 2) if all_uv_lights else None
     }
     
-    return {
+    result = {
         'user_id': user_id,
         'device_count': len(formatted_devices),
         'devices': formatted_devices,
         'overall_summary': overall_summary,
-        'analysis_history': analysis_history  # Include analysis history from cache
+        'analysis_history': analysis_history if isinstance(analysis_history, list) else []  # Include analysis history from cache
     }
+    
+    return result
 
 
 def extract_devices_from_readings(readings):
@@ -1226,18 +1242,44 @@ def get_user_advice():
                 "error": "No cached data available. Please refresh your dashboard to load data first."
             }), 400
         
+        # Validate cache structure
+        if not isinstance(cached_data, dict):
+            print(f"[Cache] Invalid cache structure for user {user_id}: {type(cached_data)}")
+            return jsonify({
+                "error": "Invalid cache structure. Please refresh your dashboard."
+            }), 500
+        
+        # Ensure required keys exist
+        if 'devices' not in cached_data:
+            cached_data['devices'] = []
+        if 'readings_by_device' not in cached_data:
+            cached_data['readings_by_device'] = {}
+        if 'analysis_history' not in cached_data:
+            cached_data['analysis_history'] = []
+        
         # Use analysis history from cache only (no database queries)
         # History will be populated when advice is generated and saved
         analysis_history = cached_data.get('analysis_history', [])
+        if analysis_history is None:
+            analysis_history = []
         
         # Use cached data (cache-only, no database queries after initial fetch)
         print(f"[Cache] Using cached data for Gemini advice (user: {user_id})")
-        formatted_data = prepare_data_for_gemini_from_cache(
-            cached_data,
-            user_id,
-            time_range_hours=time_range_hours,
-            limit_per_device=limit_per_device
-        )
+        try:
+            formatted_data = prepare_data_for_gemini_from_cache(
+                cached_data,
+                user_id,
+                time_range_hours=time_range_hours,
+                limit_per_device=limit_per_device
+            )
+        except Exception as e:
+            print(f"Error preparing data from cache: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                "error": "Error processing cached data",
+                "details": str(e)
+            }), 500
         
         # Validate that we have data to analyze
         if not formatted_data or formatted_data.get('device_count', 0) == 0:
@@ -1282,5 +1324,7 @@ def get_user_advice():
         
     except Exception as e:
         print(f"Error in get_user_advice: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
