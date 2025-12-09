@@ -19,7 +19,7 @@
  * 
  * POWER CONSUMPTION:
  * - Active (WiFi + sensors): ~160-260mA
- * - Deep sleep: ~10-150μA
+ * - Deep sleep: ~10-150μA 
  * - Estimated battery life (2000mAh): ~6-12 months (vs 8-12 hours without sleep)
  * 
  * Required Libraries (install via Arduino Library Manager):
@@ -134,6 +134,8 @@ void setup() {
     Serial.println("=================================");
     Serial.print("Boot #");
     Serial.println(bootCount);
+    Serial.print("Device ID: ");
+    Serial.println(DEVICE_ID);
   }
 
   // Load saved sleep duration
@@ -244,6 +246,16 @@ void setup() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   
+  // // Calculate total wake time (millis() starts at 0 on each boot)
+  // unsigned long totalWakeTime = millis();
+  
+  // if (ENABLE_SERIAL_DEBUG) {
+  //   Serial.println("----------------------------------------");
+  //   Serial.println("TIMING REPORT:");
+  //   Serial.print("  Total wake time: ");
+  //   Serial.print(totalWakeTime);
+  //   Serial.println(" ms");
+  // }
   // Go to sleep
   goToSleep(sleep_duration_seconds);
 }
@@ -485,42 +497,78 @@ void initializeSensors() {
   
   // Initialize I2C Bus 1 for AM2320 Temperature/Humidity Sensor
   I2C_AM2320.begin(I2C1_SDA, I2C1_SCL);
-  
+
+//start
   // Initialize AM2320
-  if (am2320.begin()) {
-    if (ENABLE_SERIAL_DEBUG) {
-      Serial.println("✓ AM2320 (Temperature/Humidity) initialized");
-    }
-  } else {
-    if (ENABLE_SERIAL_DEBUG) {
-      Serial.println("✗ AM2320 NOT found! Check wiring:");
-      Serial.println("  VCC -> 3.3V");
-      Serial.println("  GND -> GND");
-      Serial.print("  SDA -> GPIO ");
-      Serial.println(I2C1_SDA);
-      Serial.print("  SCL -> GPIO ");
-      Serial.println(I2C1_SCL);
+  // if (am2320.begin()) {
+  //   if (ENABLE_SERIAL_DEBUG) {
+  //     Serial.println("✓ AM2320 (Temperature/Humidity) initialized");
+  //   }
+  // } else {
+  //   if (ENABLE_SERIAL_DEBUG) {
+  //     Serial.println("✗ AM2320 NOT found! Check wiring:");
+  //     Serial.println("  VCC -> 3.3V");
+  //     Serial.println("  GND -> GND");
+  //     Serial.print("  SDA -> GPIO ");
+  //     Serial.println(I2C1_SDA);
+  //     Serial.print("  SCL -> GPIO ");
+  //     Serial.println(I2C1_SCL);
+  //   }
+  // }
+
+  //send
+
+  // Initialize AM2320 with retry
+  bool am2320_ok = false;
+  for (int i = 0; i < 3 && !am2320_ok; i++) {
+    if (am2320.begin()) {
+      am2320_ok = true;
+      if (ENABLE_SERIAL_DEBUG) Serial.println("✓ AM2320 (Temperature/Humidity) initialized");
+    } else {
+      delay(200);
     }
   }
+  if (!am2320_ok && ENABLE_SERIAL_DEBUG) {
+    Serial.println("✗ AM2320 NOT found after retries!");
+  }
   
+  //start
   // Initialize BH1750 Light Sensor
   // Power on and configure BH1750 - Continuous High Resolution Mode (1 lux resolution)
-  Wire.beginTransmission(BH1750_ADDR);
-  Wire.write(0x10);  // Continuous H-Resolution Mode
-  if (Wire.endTransmission() == 0) {
-    if (ENABLE_SERIAL_DEBUG) {
-      Serial.println("✓ BH1750 (Light) initialized");
+  // Wire.beginTransmission(BH1750_ADDR);
+  // Wire.write(0x10);  // Continuous H-Resolution Mode
+  // if (Wire.endTransmission() == 0) {
+  //   if (ENABLE_SERIAL_DEBUG) {
+  //     Serial.println("✓ BH1750 (Light) initialized");
+  //   }
+  // } else {
+  //   if (ENABLE_SERIAL_DEBUG) {
+  //     Serial.println("✗ BH1750 NOT found! Check wiring:");
+  //     Serial.print("  SDA -> GPIO ");
+  //     Serial.println(I2C0_SDA);
+  //     Serial.print("  SCL -> GPIO ");
+  //     Serial.println(I2C0_SCL);
+  //     Serial.print("  Address: 0x");
+  //     Serial.println(BH1750_ADDR, HEX);
+  //   }
+  // }
+
+ // end
+
+  // Initialize BH1750 Light Sensor with retry
+  bool bh1750_ok = false;
+  for (int i = 0; i < 3 && !bh1750_ok; i++) {
+    Wire.beginTransmission(BH1750_ADDR);
+    Wire.write(0x10);  // Continuous H-Resolution Mode
+    if (Wire.endTransmission() == 0) {
+      bh1750_ok = true;
+      if (ENABLE_SERIAL_DEBUG) Serial.println("✓ BH1750 (Light) initialized");
+    } else {
+      delay(200);
     }
-  } else {
-    if (ENABLE_SERIAL_DEBUG) {
-      Serial.println("✗ BH1750 NOT found! Check wiring:");
-      Serial.print("  SDA -> GPIO ");
-      Serial.println(I2C0_SDA);
-      Serial.print("  SCL -> GPIO ");
-      Serial.println(I2C0_SCL);
-      Serial.print("  Address: 0x");
-      Serial.println(BH1750_ADDR, HEX);
-    }
+  }
+  if (!bh1750_ok && ENABLE_SERIAL_DEBUG) {
+    Serial.println("✗ BH1750 NOT found after retries!");
   }
   
   // Configure ADC for analog sensors
@@ -541,7 +589,7 @@ void initializeSensors() {
   }
   
   // Wait for sensors to stabilize (especially BH1750 needs ~180ms for first reading)
-  delay(200);
+  delay(500);
 }
 
 // ============================================
@@ -552,34 +600,52 @@ void initializeSensors() {
  * Read temperature from AM2320 sensor
  * Returns: Temperature in Celsius, or NAN if read fails
  */
+// float readTemperature() {
+//   float temp = am2320.readTemperature();
+  
+//   if (isnan(temp)) {
+//     if (ENABLE_SERIAL_DEBUG) {
+//       Serial.println("⚠ Failed to read temperature from AM2320");
+//     }
+//     return NAN;
+//   }
+  
+//   return temp;
+// }
 float readTemperature() {
-  float temp = am2320.readTemperature();
-  
-  if (isnan(temp)) {
-    if (ENABLE_SERIAL_DEBUG) {
-      Serial.println("⚠ Failed to read temperature from AM2320");
-    }
-    return NAN;
+  for (int i = 0; i < 3; i++) {
+    float temp = am2320.readTemperature();
+    if (!isnan(temp)) return temp;
+    delay(100);
   }
-  
-  return temp;
+  if (ENABLE_SERIAL_DEBUG) Serial.println("⚠ Failed to read temperature from AM2320");
+  return NAN;
 }
 
 /*
  * Read humidity from AM2320 sensor
  * Returns: Humidity percentage (0-100), or NAN if read fails
  */
+// float readHumidity() {
+//   float hum = am2320.readHumidity();
+  
+//   if (isnan(hum)) {
+//     if (ENABLE_SERIAL_DEBUG) {
+//       Serial.println("⚠ Failed to read humidity from AM2320");
+//     }
+//     return NAN;
+//   }
+  
+//   return hum;
+// }
 float readHumidity() {
-  float hum = am2320.readHumidity();
-  
-  if (isnan(hum)) {
-    if (ENABLE_SERIAL_DEBUG) {
-      Serial.println("⚠ Failed to read humidity from AM2320");
-    }
-    return NAN;
+  for (int i = 0; i < 3; i++) {
+    float hum = am2320.readHumidity();
+    if (!isnan(hum)) return hum;
+    delay(100);
   }
-  
-  return hum;
+  if (ENABLE_SERIAL_DEBUG) Serial.println("⚠ Failed to read humidity from AM2320");
+  return NAN;
 }
 
 /*
@@ -587,21 +653,34 @@ float readHumidity() {
  * Based on BH1750_Light_Sensor.ino test code
  * Returns: Light level in lux, or -1 if read fails
  */
+// int readLight() {
+//   // Request 2 bytes from sensor
+//   Wire.requestFrom(BH1750_ADDR, 2);
+  
+//   if (Wire.available() == 2) {
+//     uint16_t raw = Wire.read() << 8 | Wire.read();
+//     // Convert to lux (default mode divisor is 1.2)
+//     uint16_t lux = raw / 1.2;
+//     return lux;
+//   }
+  
+//   if (ENABLE_SERIAL_DEBUG) {
+//     Serial.println("⚠ Failed to read light from BH1750");
+//   }
+//   return -1;  // Return -1 if read fails
+// }
 int readLight() {
-  // Request 2 bytes from sensor
-  Wire.requestFrom(BH1750_ADDR, 2);
-  
-  if (Wire.available() == 2) {
-    uint16_t raw = Wire.read() << 8 | Wire.read();
-    // Convert to lux (default mode divisor is 1.2)
-    uint16_t lux = raw / 1.2;
-    return lux;
+  for (int i = 0; i < 3; i++) {
+    Wire.requestFrom(BH1750_ADDR, 2);
+    if (Wire.available() == 2) {
+      uint16_t raw = Wire.read() << 8 | Wire.read();
+      uint16_t lux = raw / 1.2;
+      return lux;
+    }
+    delay(100);
   }
-  
-  if (ENABLE_SERIAL_DEBUG) {
-    Serial.println("⚠ Failed to read light from BH1750");
-  }
-  return -1;  // Return -1 if read fails
+  if (ENABLE_SERIAL_DEBUG) Serial.println("⚠ Failed to read light from BH1750");
+  return -1;
 }
 
 /*
